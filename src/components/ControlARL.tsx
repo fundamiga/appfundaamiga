@@ -351,6 +351,7 @@ const ControlARL: React.FC = () => {
     });
 
   const [busqueda, setBusqueda] = useState('');
+  const [loading, setLoading] = useState(true);
   const [fechaSeleccionada, setFechaSeleccionada] = useState(getLocalYYYYMMDD());
   const [procesando, setProcesando] = useState(false);
   const [errorMSG, setErrorMSG] = useState<string | null>(null);

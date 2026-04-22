@@ -171,7 +171,8 @@ const FilaTrabajadorARL: React.FC<{
     // Si sigue activo hoy
     if (inicioPeriodo && esActivo) {
       const hoy = new Date();
-      const diffTime = Math.abs(hoy.getTime() - inicioPeriodo.getTime());
+      const inicio = inicioPeriodo as Date;
+      const diffTime = Math.abs(hoy.getTime() - inicio.getTime());
       total += Math.ceil(diffTime / (1000 * 60 * 60 * 24)) + 1;
     }
     

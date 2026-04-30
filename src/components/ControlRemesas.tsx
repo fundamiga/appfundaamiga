@@ -507,7 +507,7 @@ const ControlRemesas: React.FC = () => {
             ) : (
               personasPreFiltradas.map((p, idx) => (
                 <FilaTrabajadorRemesa
-                  key={p.cedula}
+                  key={`${p.cedula}-${idx}`}
                   persona={p}
                   mes={mesACalcular}
                   year={yearACalcular}

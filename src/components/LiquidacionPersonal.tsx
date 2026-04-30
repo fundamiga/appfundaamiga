@@ -12,6 +12,7 @@ import autoTable from "jspdf-autotable";
 import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { calcularDiasARL } from '@/utils/arl';
+import { calcularDiasRemesas } from '@/utils/remesas';
 
 // Tipo de Supabase (snake_case) mapeado al tipo interno (camelCase)
 interface PersonaDB {
@@ -37,6 +38,7 @@ const CARGOS = [
   'MAYORISTA',
   'GUABINAS',
   'BOLIVAR',
+  'REMESAS',
 ];
 interface FormLiquidacion {
   diasTurno: number; turnosAdicionales: number; horasAdicionales: number;
@@ -508,11 +510,18 @@ export const LiquidacionPersonal: React.FC = () => {
     setResultado(null); 
     setMostrarDesglose(false);
     
-    // Obtener días ARL del mes actual
+    // Obtener días (ARL o Remesas según el cargo) del mes actual
     setDiasARLCalculados(null);
     const m = new Date().getMonth() + 1;
     const y = new Date().getFullYear();
-    const dias = await calcularDiasARL(p.cedula, m, y);
+    
+    let dias = 0;
+    if (p.cargo === 'REMESAS') {
+      dias = await calcularDiasRemesas(p.cedula, m, y);
+    } else {
+      dias = await calcularDiasARL(p.cedula, m, y);
+    }
+    
     setDiasARLCalculados(dias);
 
     // Configurar form inicial
@@ -773,8 +782,13 @@ export const LiquidacionPersonal: React.FC = () => {
         const m = fechaDoc.getMonth() + 1;
         const y = fechaDoc.getFullYear();
 
-        // Obtenemos los días actualizados desde la utilidad que lee supabase
-        const dias = await calcularDiasARL((item.persona as any).cedula, m, y, item.fecha);
+        // Obtenemos los días actualizados según el cargo
+        let dias = 0;
+        if ((item.persona as any).cargo === 'REMESAS') {
+          dias = await calcularDiasRemesas((item.persona as any).cedula, m, y, item.fecha);
+        } else {
+          dias = await calcularDiasARL((item.persona as any).cedula, m, y, item.fecha);
+        }
         const nuevoDescuento = Math.round((76200 / 30) * dias);
         const nuevoForm = { ...item.form, valorDescuentoSeguridad: nuevoDescuento, tieneDescuentoSeguridad: true };
         const nuevoResultado = calcular(item.persona as any, nuevoForm);
@@ -1367,7 +1381,7 @@ export const LiquidacionPersonal: React.FC = () => {
                   </div>
                   <div className="space-y-3">
                     <ToggleRow active={form.tieneDescuentoSeguridad} onToggle={() => set('tieneDescuentoSeguridad', !form.tieneDescuentoSeguridad)}
-                      label={`Seguridad Social (ARL: ${diasARLCalculados ?? '...'} días)`} sublabel={`Prorrateo por defecto (30 días): ${fmt(DESCUENTO_SEG_SOCIAL_FULL)}`}
+                      label={`Seguridad Social (Días: ${diasARLCalculados ?? '...'})`} sublabel={`Prorrateo por defecto (30 días): ${fmt(DESCUENTO_SEG_SOCIAL_FULL)}`}
                       iconEl={<Shield size={15} className={form.tieneDescuentoSeguridad ? 'text-blue-300' : 'text-slate-500'} />}
                       accentClass="bg-blue-500/20 border border-blue-500/20" />
                     {form.tieneDescuentoSeguridad && (
@@ -1674,7 +1688,7 @@ export const LiquidacionPersonal: React.FC = () => {
                     className="w-full flex items-center justify-center gap-2.5 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/30 text-blue-400 hover:text-blue-300 px-4 py-3 rounded-xl font-bold text-sm transition-all shadow-lg shadow-blue-900/10"
                     title="Actualizar descuentos de ARL según registros actuales"
                   >
-                    <Shield size={16} /> Sincronizar ARL
+                    <Shield size={16} /> Sincronizar Días (ARL/Remesas)
                   </button>
                   <button onClick={generarPDF} className="w-full flex items-center justify-center gap-2.5 bg-red-500/15 hover:bg-red-500/25 border border-red-500/25 text-red-400 hover:text-red-300 px-4 py-3 rounded-xl font-bold text-sm transition-all">
                     <FileText size={16} />Exportar PDF

@@ -3,12 +3,14 @@ import { supabaseRemesas as supabase } from '@/lib/supabaseRemesas';
 // Lógica para calcular los días comerciales de Remesas (basado en la lógica de ARL)
 export const calcularDiasRemesas = async (cedula: string, mes: number, año: number, fechaHasta?: string | Date): Promise<number> => {
     try {
-        const { data: registros } = await supabase
+        const { data } = await supabase
             .from('registros_remesas')
             .select('*')
             .eq('cedula_trabajador', cedula)
             .order('fecha', { ascending: true })
             .order('creado_at', { ascending: true });
+
+        const registros = data || [];
 
         const pad = (n: number) => String(n).padStart(2, '0');
         const lastDayOfMonth = new Date(año, mes, 0).getDate();

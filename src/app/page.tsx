@@ -1,13 +1,14 @@
 'use client';
 import Image from 'next/image';
 import React, { useState } from 'react';
-import { CheckCircle, Calculator, ShieldCheck } from 'lucide-react';
+import { CheckCircle, Calculator, ShieldCheck, Package } from 'lucide-react';
 import { LiquidacionPersonal } from '@/components/LiquidacionPersonal';
 import ControlARL from '@/components/ControlARL';
+import ControlRemesas from '@/components/ControlRemesas';
 import { BotonAccesoAdmin } from '@/components/BotonAccesoAdmin';
 
 export default function SistemaControlDonaciones() {
-  const [tabActiva, setTabActiva] = useState<'liquidacion' | 'arl'>('liquidacion');
+  const [tabActiva, setTabActiva] = useState<'liquidacion' | 'arl' | 'remesas'>('liquidacion');
 
   return (
     <div className="min-h-screen bg-slate-50 relative overflow-hidden">
@@ -72,6 +73,12 @@ export default function SistemaControlDonaciones() {
              >
                 <ShieldCheck size={18} /> Control ARL
              </button>
+             <button 
+               onClick={() => setTabActiva('remesas')}
+               className={`flex items-center gap-2 px-6 py-3 rounded-xl text-sm font-black transition-all ${tabActiva === 'remesas' ? 'bg-amber-500 text-white shadow-md' : 'text-slate-500 hover:bg-slate-50'}`}
+             >
+                <Package size={18} /> Control Remesas
+             </button>
           </div>
         </div>
 
@@ -80,8 +87,10 @@ export default function SistemaControlDonaciones() {
           <div className="w-full max-w-5xl">
             {tabActiva === 'liquidacion' ? (
                <LiquidacionPersonal />
-            ) : (
+            ) : tabActiva === 'arl' ? (
                <ControlARL />
+            ) : (
+               <ControlRemesas />
             )}
           </div>
         </div>

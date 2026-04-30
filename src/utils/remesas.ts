@@ -1,10 +1,10 @@
-import { supabase } from '@/lib/supabase';
+import { supabaseRemesas as supabase } from '@/lib/supabaseRemesas';
 
-// Lógica para calcular los días comerciales de ARL (30 días de nómina)
-export const calcularDiasARL = async (cedula: string, mes: number, año: number, fechaHasta?: string | Date): Promise<number> => {
+// Lógica para calcular los días comerciales de Remesas (basado en la lógica de ARL)
+export const calcularDiasRemesas = async (cedula: string, mes: number, año: number, fechaHasta?: string | Date): Promise<number> => {
     try {
         const { data: registros } = await supabase
-            .from('registros_arl')
+            .from('registros_remesas')
             .select('*')
             .eq('cedula_trabajador', cedula)
             .order('fecha', { ascending: true })
@@ -78,7 +78,7 @@ export const calcularDiasARL = async (cedula: string, mes: number, año: number,
         return ajusteComercial;
 
     } catch (error) {
-        console.error("Error calculando ARL:", error);
+        console.error("Error calculando Remesas:", error);
         return 30;
     }
 };

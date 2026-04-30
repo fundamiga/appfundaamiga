@@ -20,10 +20,10 @@ interface Persona {
 const CARGOS = [
   'CONTRATISTAS DE ADMINISTRACION',
   '5 - 6', '6 - 6', 'CARTON C', 'GUACANDA',
-  'TERCERA', 'ROZO', '2 - 10', 'MAYORISTA', 'GUABINAS', 'BOLIVAR',
+  'TERCERA', 'ROZO', '2 - 10', 'MAYORISTA', 'GUABINAS', 'BOLIVAR', 'REMESAS',
 ];
 
-const FORMAS_PAGO = ['Transferencia', 'Nequi', 'Bancolombia', 'AV Villas', 'Davivienda', 'Efectivo'];
+const FORMAS_PAGO = ['Transferencia', 'Nequi', 'Bancolombia', 'AV Villas', 'Davivienda', 'Daviplata', 'Efectivo'];
 
 const fmt = (n: number) => '$' + Math.round(n).toLocaleString('es-CO');
 
@@ -45,6 +45,7 @@ const cargoColor: Record<string, string> = {
   'MAYORISTA': 'bg-indigo-50 text-indigo-700 border-indigo-200',
   'GUABINAS': 'bg-rose-50 text-rose-700 border-rose-200',
   'BOLIVAR': 'bg-lime-50 text-lime-700 border-lime-200',
+  'REMESAS': 'bg-yellow-50 text-yellow-700 border-yellow-200',
 };
 
 export default function AdminPage() {

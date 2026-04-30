@@ -1,12 +1,18 @@
 {
   "name": "fundamiga",
   "version": "0.1.0",
+  "description": "Sistema de Gestión Fundamiga",
+  "author": "Fundamiga",
   "private": true,
+  "main": "electron/main.js",
   "scripts": {
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "eslint"
+    "lint": "eslint",
+    "electron": "electron .",
+    "electron:dev": "next build && electron .",
+    "dist": "next build && electron-builder"
   },
   "dependencies": {
     "@cloudinary/react": "^1.14.3",
@@ -29,11 +35,35 @@
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "autoprefixer": "^10.4.27",
+    "electron": "^34.0.0",
+    "electron-builder": "^25.1.8",
     "eslint": "^9",
     "eslint-config-next": "16.1.4",
     "postcss": "^8.5.9",
     "tailwindcss": "^4.2.2",
     "tsx": "^4.21.0",
     "typescript": "^5"
+  },
+  "build": {
+    "appId": "com.fundamiga.app",
+    "productName": "Fundamiga",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "electron/**/*",
+      "out/**/*"
+    ],
+    "win": {
+      "target": ["nsis"],
+      "icon": "electron/icon.ico"
+    },
+    "nsis": {
+      "oneClick": true,
+      "allowToChangeInstallationDirectory": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Fundamiga"
+    }
   }
 }

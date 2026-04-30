@@ -376,7 +376,7 @@ const ControlARL: React.FC = () => {
     setLoading(true);
     try {
       const [{ data: pData }, { data: rData }] = await Promise.all([
-        supabase.from('trabajadores').select('cedula, nombre, cargo').order('nombre'),
+        supabase.from('trabajadores').select('cedula, nombre, cargo').neq('cargo', 'REMESAS').order('nombre'),
         supabase.from('registros_arl').select('*').order('fecha', { ascending: false })
       ]);
       if (pData) setPersonas(pData);

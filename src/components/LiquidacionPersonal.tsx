@@ -13,6 +13,7 @@ import * as XLSX from 'xlsx';
 import { supabase } from '@/lib/supabase';
 import { calcularDiasARL } from '@/utils/arl';
 import { calcularDiasRemesas } from '@/utils/remesas';
+import { calcularDescuentoARLPila, DESCUENTO_FULL_30 } from '@/utils/calcularDescuentoARL';
 
 // Tipo de Supabase (snake_case) mapeado al tipo interno (camelCase)
 interface PersonaDB {
@@ -67,7 +68,7 @@ interface LiquidacionCompleta {
 
 const PERSONAS: Persona[] = []; // Cargado desde Supabase
 
-const DESCUENTO_SEG_SOCIAL_FULL = 76200;
+const DESCUENTO_SEG_SOCIAL_FULL = DESCUENTO_FULL_30;
 const DESCUENTO_PRESTAMOS_DEFAULT = 4000;
 const fmt = (n: number) => `$${Math.round(n).toLocaleString('es-CO')}`;
 
@@ -269,6 +270,91 @@ export const LiquidacionPersonal: React.FC = () => {
   const totalNeto = historialActivo.reduce((acc, i) => acc + i.resultado.neto, 0);
   const totalPagado = historialActivo.filter(i => i.estado === 'Pagado').reduce((acc, i) => acc + i.resultado.neto, 0);
   const totalPendiente = historialActivo.filter(i => i.estado === 'Pendiente').reduce((acc, i) => acc + i.resultado.neto, 0);
+
+  const generarPDFARL = async () => {
+    // Filtrar personas que tienen descuento de ARL mayor a 0
+    const registrosARL = historialActivo.filter(i => i.resultado.descuentoSeguridad > 0);
+    
+    if (registrosARL.length === 0) {
+      alert("No hay registros con descuentos de ARL en este informe.");
+      return;
+    }
+
+    try {
+      const doc = new jsPDF();
+      const periodo = obtenerPeriodo();
+      
+      // Encabezado
+      doc.setFontSize(18);
+      doc.setTextColor(16, 185, 129); // Emerald 500
+      doc.text("FUNDAMIGA - INFORME DE DESCUENTOS ARL", 14, 22);
+      
+      doc.setFontSize(11);
+      doc.setTextColor(100);
+      doc.text(`PERIODO: ${periodo.toUpperCase()}`, 14, 29);
+      doc.text(`FECHA DE REPORTE: ${new Date().toLocaleString('es-CO')}`, 14, 36);
+
+      // Línea divisoria
+      doc.setDrawColor(16, 185, 129);
+      doc.setLineWidth(0.5);
+      doc.line(14, 40, 196, 40);
+
+      // Preparar datos
+      // Agrupar por cédula (por si hay múltiples registros de la misma persona)
+      const agrupados = new Map();
+      registrosARL.forEach(item => {
+        const ced = item.persona.cedula;
+        if (!agrupados.has(ced)) {
+          agrupados.set(ced, {
+            nombre: item.persona.nombre,
+            cargo: item.persona.cargo,
+            dias: 0,
+            valor: 0
+          });
+        }
+        const acc = agrupados.get(ced);
+        // Intentar obtener los días del form o calcularlos si no están (asumimos que el form los tiene o daremos una aproximación)
+        // En LiquidacionPersonal, diasARLCalculados es local al estado de selección, 
+        // pero podemos intentar recuperarlo si guardamos esa info. 
+        // Por ahora, usemos el valor del descuento para mostrar el reporte.
+        acc.valor += item.resultado.descuentoSeguridad;
+      });
+
+      const rows = Array.from(agrupados.entries()).map(([cedula, data]: any) => [
+        data.nombre,
+        cedula,
+        data.cargo,
+        `$${data.valor.toLocaleString('es-CO')}`
+      ]);
+
+      // Tabla
+      autoTable(doc, {
+        startY: 48,
+        head: [['NOMBRE TRABAJADOR', 'CÉDULA', 'CARGO / PARQUEADERO', 'VALOR DESCUENTO']],
+        body: rows,
+        headStyles: { fillColor: [16, 185, 129], textColor: 255, fontStyle: 'bold' },
+        alternateRowStyles: { fillColor: [240, 253, 244] },
+        styles: { fontSize: 9, cellPadding: 4 },
+        columnStyles: {
+          3: { halign: 'right' }
+        }
+      });
+
+      // Total
+      const totalGeneral = registrosARL.reduce((acc, i) => acc + i.resultado.descuentoSeguridad, 0);
+      const finalY = (doc as any).lastAutoTable.finalY || 150;
+      
+      doc.setFontSize(11);
+      doc.setTextColor(30, 41, 59);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`TOTAL ARL RECAUDADO: $${totalGeneral.toLocaleString('es-CO')}`, 196, finalY + 15, { align: 'right' });
+
+      doc.save(`Informe_ARL_Liquidaciones_${periodo.replace(/ /g, '_')}.pdf`);
+    } catch (error) {
+      console.error("Error PDF:", error);
+      alert("Error al generar el PDF de ARL");
+    }
+  };
 
  const generarExcelDavivienda = async () => {
   try {
@@ -526,7 +612,7 @@ export const LiquidacionPersonal: React.FC = () => {
 
     // Configurar form inicial
     const formInicial = formVacio();
-    formInicial.valorDescuentoSeguridad = Math.round((DESCUENTO_SEG_SOCIAL_FULL / 30) * dias);
+    formInicial.valorDescuentoSeguridad = calcularDescuentoARLPila(dias);
     formInicial.tieneDescuentoSeguridad = true; // sugerir descuento por defecto al haber integración
     setForm(formInicial);
   };
@@ -789,7 +875,7 @@ export const LiquidacionPersonal: React.FC = () => {
         } else {
           dias = await calcularDiasARL((item.persona as any).cedula, m, y, item.fecha);
         }
-        const nuevoDescuento = Math.round((76200 / 30) * dias);
+        const nuevoDescuento = calcularDescuentoARLPila(dias);
         const nuevoForm = { ...item.form, valorDescuentoSeguridad: nuevoDescuento, tieneDescuentoSeguridad: true };
         const nuevoResultado = calcular(item.persona as any, nuevoForm);
         
@@ -1391,7 +1477,7 @@ export const LiquidacionPersonal: React.FC = () => {
                            value={diasARLCalculados || 30} 
                            onChange={d => {
                              setDiasARLCalculados(d);
-                             set('valorDescuentoSeguridad', Math.round((DESCUENTO_SEG_SOCIAL_FULL / 30) * d));
+                             set('valorDescuentoSeguridad', calcularDescuentoARLPila(d));
                            }} 
                            min={0} 
                         />
@@ -1695,6 +1781,10 @@ export const LiquidacionPersonal: React.FC = () => {
                   </button>
                   <button onClick={generarExcelDavivienda} className="w-full flex items-center justify-center gap-2.5 bg-emerald-500/15 hover:bg-emerald-500/25 border border-emerald-500/25 text-emerald-400 hover:text-emerald-300 px-4 py-3 rounded-xl font-bold text-sm transition-all">
                     <Download size={16} />Excel General
+                  </button>
+                  
+                  <button onClick={generarPDFARL} className="w-full flex items-center justify-center gap-2.5 bg-slate-800/80 hover:bg-slate-700 border border-slate-700 text-slate-300 hover:text-white px-4 py-3 rounded-xl font-bold text-sm transition-all shadow-lg">
+                    <FileText size={15} className="text-emerald-500" /> Generar PDF ARL
                   </button>
 
                   {/* Excel Davivienda con preview */}

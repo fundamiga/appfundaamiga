@@ -1,9 +1,13 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, Calendar, ShieldAlert, CheckCircle, Shield, RefreshCw, X, AlertCircle, Trash2, Edit2, Save, XCircle, History, User, ArrowRight } from 'lucide-react';
+import { Search, Calendar, ShieldAlert, CheckCircle, Shield, RefreshCw, X, AlertCircle, Trash2, Edit2, Save, XCircle, History, User, ArrowRight, FileText } from 'lucide-react';
 import { supabase } from '@/lib/supabase';
+import { supabaseRemesas } from '@/lib/supabaseRemesas';
 import { calcularDiasARL } from '@/utils/arl';
+import { calcularDescuentoARLPila } from '@/utils/calcularDescuentoARL';
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 
 const fmt = (n: number) => '$' + Math.round(n).toLocaleString('es-CO');
 
@@ -140,8 +144,7 @@ const FilaTrabajadorARL: React.FC<{
     calcularDiasARL(persona.cedula, mes, year).then(setDias);
   }, [persona.cedula, mes, year, refreshTrigger]);
 
-  const descStd = 76200;
-  const descuentoReal = dias !== null ? (descStd / 30) * dias : 0;
+  const descuentoReal = dias !== null ? calcularDescuentoARLPila(dias) : 0;
   const regReciente = registrosPersona.length > 0 ? registrosPersona[0] : null;
   const ultimoEstado = regReciente ? regReciente.tipo : null;
   // Si no hay registro (null), lo tratamos como Activo por defecto
@@ -371,13 +374,121 @@ const ControlARL: React.FC = () => {
   const currentYear = new Date().getFullYear();
   const [mesACalcular, setMesACalcular] = useState(currentMonth);
   const [yearACalcular, setYearACalcular] = useState(currentYear);
+  
+  // --- LÓGICA DE CONTADOR EN TIEMPO REAL ---
+  const periodosVisuales = React.useMemo(() => {
+    if (!personaSeleccionada) return [];
+    const regs = getRegistrosPersona(personaSeleccionada.cedula);
+    const sorted = [...regs].sort((a, b) => new Date(a.fecha).getTime() - new Date(b.fecha).getTime());
+    
+    const result: { inicio: string, fin: string, diasTotales: number, diasEnMes: number, estado: 'cerrado' | 'abierto' }[] = [];
+    let currentInicio: RegistroARL | null = null;
+
+    const mesStr = String(mesACalcular).padStart(2, '0');
+    const fInicioMes = `${yearACalcular}-${mesStr}-01`;
+    const fFinMes = `${yearACalcular}-${mesStr}-${String(new Date(yearACalcular, mesACalcular, 0).getDate()).padStart(2, '0')}`;
+
+    sorted.forEach(r => {
+      if (r.tipo === 'ingreso' || r.tipo === 're-ingreso') {
+        currentInicio = r;
+      } else if (r.tipo === 'retiro' && currentInicio) {
+        const inicio = currentInicio as RegistroARL; // Forzamos el tipo porque TS a veces infiere 'never' tras un forEach
+        const start = new Date(inicio.fecha + 'T12:00:00');
+        const end = new Date(r.fecha + 'T12:00:00');
+        const diff = Math.ceil((end.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+        
+        // Calcular solapamiento con el mes seleccionado
+        const overlapStart = inicio.fecha > fInicioMes ? inicio.fecha : fInicioMes;
+        const overlapEnd = r.fecha < fFinMes ? r.fecha : fFinMes;
+        let overlapDays = 0;
+        if (overlapStart <= overlapEnd && overlapStart <= r.fecha && overlapEnd >= inicio.fecha) {
+           const s = new Date(overlapStart + 'T12:00:00');
+           const e = new Date(overlapEnd + 'T12:00:00');
+           overlapDays = Math.ceil((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+        }
+
+        result.push({ inicio: inicio.fecha, fin: r.fecha, diasTotales: diff, diasEnMes: overlapDays, estado: 'cerrado' });
+        currentInicio = null;
+      }
+    });
+
+    if (currentInicio) {
+      const inicio = currentInicio as RegistroARL; // Forzamos el tipo porque TS a veces infiere 'never' tras un forEach
+      const start = new Date(inicio.fecha + 'T12:00:00');
+      const hoy = new Date();
+      const diff = Math.ceil((hoy.getTime() - start.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+      
+      const overlapStart = inicio.fecha > fInicioMes ? inicio.fecha : fInicioMes;
+      const fHoyStr = hoy.toISOString().split('T')[0];
+      const overlapEnd = fHoyStr < fFinMes ? fHoyStr : fFinMes;
+      
+      let overlapDays = 0;
+      if (overlapStart <= overlapEnd) {
+         const s = new Date(overlapStart + 'T12:00:00');
+         const e = new Date(overlapEnd + 'T12:00:00');
+         overlapDays = Math.ceil((e.getTime() - s.getTime()) / (1000 * 60 * 60 * 24)) + 1;
+      }
+
+      result.push({ inicio: inicio.fecha, fin: 'Activo', diasTotales: diff, diasEnMes: overlapDays, estado: 'abierto' });
+    }
+
+    return result.reverse(); 
+  }, [personaSeleccionada, registros, mesACalcular, yearACalcular]);
+
+  const sumaMesActual = React.useMemo(() => {
+    if (!personaSeleccionada) return 0;
+    const mesStr = String(mesACalcular).padStart(2, '0');
+    const hoy = new Date();
+    const lastDayOfMonth = new Date(yearACalcular, mesACalcular, 0).getDate();
+    
+    // Determinar hasta qué día contar (limitDay)
+    let limitDay = lastDayOfMonth;
+    const esMesActual = (hoy.getFullYear() === yearACalcular && hoy.getMonth() + 1 === mesACalcular);
+    if (esMesActual) limitDay = hoy.getDate();
+    if (new Date(`${yearACalcular}-${mesStr}-01`) > hoy) limitDay = 0;
+
+    let totalLiteral = 0;
+    const regs = getRegistrosPersona(personaSeleccionada.cedula);
+    const regAntes = regs.filter(r => r.fecha < `${yearACalcular}-${mesStr}-01`);
+    
+    let activo = false;
+    if (regAntes.length > 0) {
+        const u = [...regAntes].sort((a,b) => new Date(b.fecha).getTime() - new Date(a.fecha).getTime())[0];
+        activo = (u.tipo === 'ingreso' || u.tipo === 're-ingreso');
+    }
+    
+    for(let d=1; d<=limitDay; d++) {
+        const currentFecha = `${yearACalcular}-${mesStr}-${String(d).padStart(2, '0')}`;
+        const evs = regs.filter(r => r.fecha === currentFecha);
+        if (evs.length > 0) {
+            const u = [...evs].sort((a,b) => {
+                const v = new Date(b.fecha).getTime() - new Date(a.fecha).getTime();
+                if (v === 0 && b.creado_at && a.creado_at) return new Date(b.creado_at).getTime() - new Date(a.creado_at).getTime();
+                return v;
+            })[0];
+            if (evs.some(r => r.tipo === 'ingreso' || r.tipo === 're-ingreso') || activo) {
+                totalLiteral++;
+            }
+            activo = (u.tipo === 'ingreso' || u.tipo === 're-ingreso');
+        } else if (activo) {
+            totalLiteral++;
+        }
+    }
+
+    // Ajuste Comercial (30 días)
+    if (limitDay === lastDayOfMonth && totalLiteral === lastDayOfMonth) return 30;
+    if (totalLiteral > 30) return 30;
+    
+    return totalLiteral;
+  }, [personaSeleccionada, registros, mesACalcular, yearACalcular]);
+  // ------------------------------------------
 
   const cargarDatos = useCallback(async () => {
     setLoading(true);
     try {
       const [{ data: pData }, { data: rData }] = await Promise.all([
         supabase.from('trabajadores').select('cedula, nombre, cargo').neq('cargo', 'REMESAS').order('nombre'),
-        supabase.from('registros_arl').select('*').order('fecha', { ascending: false })
+        supabaseRemesas.from('registros_arl').select('*').order('fecha', { ascending: false })
       ]);
       if (pData) setPersonas(pData);
       if (rData) setRegistros(rData);
@@ -440,7 +551,7 @@ const ControlARL: React.FC = () => {
         };
       });
 
-      const { error } = await supabase.from('registros_arl').insert(inserts);
+      const { error } = await supabaseRemesas.from('registros_arl').insert(inserts);
       if (error) throw error;
       
       setSeleccionados([]);
@@ -470,7 +581,7 @@ const ControlARL: React.FC = () => {
         fecha: fechaInicio
       }));
       
-      const { error } = await supabase.from('registros_arl').insert(inserts);
+      const { error } = await supabaseRemesas.from('registros_arl').insert(inserts);
       if (error) throw error;
       
       await cargarDatos();
@@ -489,12 +600,93 @@ const ControlARL: React.FC = () => {
     setErrorMSG(null);
     try {
       // Usamos una condición que siempre sea verdadera para borrar todo
-      const { error } = await supabase.from('registros_arl').delete().neq('cedula_trabajador', '0'); 
+      const { error } = await supabaseRemesas.from('registros_arl').delete().neq('cedula_trabajador', '0'); 
       if (error) throw error;
       await cargarDatos();
       alert('Sistema de ARL reiniciado correctamente. Todos los trabajadores están ahora en estado base.');
     } catch (e: any) {
       setErrorMSG('Error al reiniciar sistema: ' + e.message);
+    }
+    setProcesando(false);
+  };
+
+  const generarPDFARL = async () => {
+    if (personasPreFiltradas.length === 0) return;
+    setProcesando(true);
+    try {
+      const doc = new jsPDF();
+      const mesNombre = new Date(yearACalcular, mesACalcular - 1).toLocaleString('es', { month: 'long' }).toUpperCase();
+      
+      // Encabezado
+      doc.setFontSize(18);
+      doc.setTextColor(30, 41, 59); // Slate 800
+      doc.text("FUNDAMIGA - CONTROL DE ARL", 14, 22);
+      
+      doc.setFontSize(11);
+      doc.setTextColor(100);
+      doc.text(`REPORTE DE AFILIACIONES Y NOVEDADES`, 14, 29);
+      doc.text(`PERIODO: ${mesNombre} ${yearACalcular}`, 14, 36);
+      doc.text(`GENERADO: ${new Date().toLocaleString('es-CO')}`, 14, 43);
+
+      // Línea divisoria
+      doc.setDrawColor(226, 232, 240);
+      doc.line(14, 48, 196, 48);
+
+      // Preparar datos (paralelo para ser rápido)
+      const rows = await Promise.all(personasPreFiltradas.map(async (p) => {
+        const dias = await calcularDiasARL(p.cedula, mesACalcular, yearACalcular);
+        const valor = calcularDescuentoARLPila(dias);
+        
+        const regs = getRegistrosPersona(p.cedula);
+        const ultimo = regs.length > 0 ? regs[0].tipo : 'activo';
+        const estadoStr = (ultimo === 'ingreso' || ultimo === 're-ingreso' || ultimo === 'activo') ? 'ACTIVO' : 'RETIRADO';
+
+        return [
+          p.nombre,
+          p.cedula,
+          p.cargo,
+          estadoStr,
+          dias,
+          `$${valor.toLocaleString('es-CO')}`
+        ];
+      }));
+
+      // Tabla
+      autoTable(doc, {
+        startY: 55,
+        head: [['NOMBRE', 'CÉDULA', 'CARGO', 'ESTADO', 'DÍAS', 'DESCUENTO']],
+        body: rows,
+        headStyles: { fillColor: [37, 99, 235], textColor: 255, fontStyle: 'bold', fontSize: 9 },
+        alternateRowStyles: { fillColor: [248, 250, 252] },
+        styles: { fontSize: 8, cellPadding: 3, textColor: 50 },
+        columnStyles: {
+          4: { halign: 'center' },
+          5: { halign: 'right' }
+        },
+        didDrawPage: (data) => {
+          // Pie de página
+          const str = "Página " + (doc as any).internal.getNumberOfPages();
+          doc.setFontSize(8);
+          doc.setTextColor(150);
+          doc.text(str, data.settings.margin.left, doc.internal.pageSize.height - 10);
+        }
+      });
+
+      // Total final
+      const totalARL = rows.reduce((acc, r) => acc + parseInt(String(r[5]).replace(/[^0-9]/g, '')), 0);
+      const finalY = (doc as any).lastAutoTable.finalY || 150;
+      
+      if (finalY + 20 > doc.internal.pageSize.height) doc.addPage();
+      
+      doc.setFontSize(10);
+      doc.setTextColor(30, 41, 59);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`TOTAL ESTIMADO ARL DEL PERIODO: $${totalARL.toLocaleString('es-CO')}`, 196, (doc as any).lastAutoTable.finalY + 12, { align: 'right' });
+
+      doc.save(`Informe_ARL_${mesNombre}_${yearACalcular}.pdf`);
+    } catch (error) {
+      console.error("Error PDF:", error);
+      alert("Hubo un error al generar el informe PDF.");
     }
     setProcesando(false);
   };
@@ -511,7 +703,7 @@ const ControlARL: React.FC = () => {
     );
     const fechaFinal = fechaForzada || fechaSeleccionada;
     try {
-      const { error } = await supabase.from('registros_arl').insert({ cedula_trabajador: cedula, tipo: nuevoTipo, fecha: fechaFinal });
+      const { error } = await supabaseRemesas.from('registros_arl').insert({ cedula_trabajador: cedula, tipo: nuevoTipo, fecha: fechaFinal });
       if (error) throw error;
       await cargarDatos();
     } catch (e: any) { setErrorMSG('Error al registrar: ' + e.message); }
@@ -522,7 +714,7 @@ const ControlARL: React.FC = () => {
     setProcesando(true);
     setErrorMSG(null);
     try {
-      const { error } = await supabase.from('registros_arl').update({ tipo: registro.tipo, fecha: registro.fecha }).eq('id', registro.id);
+      const { error } = await supabaseRemesas.from('registros_arl').update({ tipo: registro.tipo, fecha: registro.fecha }).eq('id', registro.id);
       if (error) throw error;
       await cargarDatos();
     } catch (e: any) { setErrorMSG('Error al editar: ' + e.message); }
@@ -534,7 +726,7 @@ const ControlARL: React.FC = () => {
     setProcesando(true);
     setErrorMSG(null);
     try {
-      const { error } = await supabase.from('registros_arl').delete().eq('id', id);
+      const { error } = await supabaseRemesas.from('registros_arl').delete().eq('id', id);
       if (error) throw error;
       await cargarDatos();
     } catch (e: any) { setErrorMSG('Error al eliminar: ' + e.message); }
@@ -546,7 +738,7 @@ const ControlARL: React.FC = () => {
     setProcesando(true);
     setErrorMSG(null);
     try {
-      const { error } = await supabase.from('registros_arl').delete().eq('cedula_trabajador', cedula);
+      const { error } = await supabaseRemesas.from('registros_arl').delete().eq('cedula_trabajador', cedula);
       if (error) throw error;
       await cargarDatos();
     } catch (e: any) { setErrorMSG('Error al reiniciar: ' + e.message); }
@@ -583,6 +775,13 @@ const ControlARL: React.FC = () => {
             className="flex items-center gap-2 px-5 py-2.5 bg-blue-600 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-blue-700 transition-all shadow-lg shadow-blue-200"
           >
             <History size={16} /> Historial Global
+          </button>
+          <button 
+            onClick={generarPDFARL}
+            disabled={procesando || personasPreFiltradas.length === 0}
+            className="flex items-center gap-2 px-5 py-2.5 bg-slate-800 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-900 transition-all shadow-lg shadow-slate-200 disabled:opacity-50"
+          >
+            <FileText size={16} /> Generar PDF
           </button>
           <button 
             onClick={activarNuevosMasivo}
@@ -838,6 +1037,53 @@ const ControlARL: React.FC = () => {
           onClose={() => setPersonaSeleccionada(null)}
         >
           <div className="space-y-8">
+            {/* Resumen de Contador en Tiempo Real */}
+            <div className="bg-slate-900 rounded-[2rem] p-6 text-white shadow-xl border border-white/5 relative overflow-hidden">
+              <div className="absolute top-0 right-0 p-8 opacity-10">
+                <History size={80} />
+              </div>
+              <div className="relative z-10">
+                <div className="flex items-center gap-2 mb-4">
+                  <div className="h-1.5 w-6 bg-blue-500 rounded-full" />
+                  <span className="text-[10px] font-black uppercase tracking-[0.2em] text-blue-400">Contador en tiempo real</span>
+                </div>
+                
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                  <div>
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-1">Días en {new Date(2000, mesACalcular - 1).toLocaleString('es', { month: 'long' })} {yearACalcular}</p>
+                    <div className="flex items-end gap-2">
+                      <span className="text-4xl font-black text-white">{sumaMesActual}</span>
+                      <span className="text-sm font-bold text-slate-500 mb-1.5">días totales</span>
+                    </div>
+                  </div>
+                  <div className="flex flex-col justify-center border-l border-white/10 pl-6">
+                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-widest mb-2">Periodos detectados</p>
+                    <div className="space-y-2 max-h-24 overflow-y-auto pr-2 custom-scrollbar">
+                      {periodosVisuales.length === 0 ? (
+                        <p className="text-[10px] text-slate-500 italic">Sin periodos registrados</p>
+                      ) : (
+                        periodosVisuales.map((p, i) => (
+                          <div key={i} className="flex items-center justify-between bg-white/5 px-3 py-1.5 rounded-xl border border-white/5">
+                            <div className="flex flex-col">
+                              <span className="text-[9px] font-black text-white/80">{p.inicio} → {p.fin}</span>
+                              {p.diasEnMes > 0 && (
+                                <span className="text-[8px] font-bold text-blue-300">En este mes: {p.diasEnMes}d</span>
+                              )}
+                            </div>
+                            <div className="flex flex-col items-end">
+                              <span className={`text-[10px] font-black ${p.estado === 'abierto' ? 'text-emerald-400' : 'text-blue-400'}`}>
+                                {p.diasTotales}d total
+                              </span>
+                            </div>
+                          </div>
+                        ))
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {/* Acciones Rápidas */}
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
               <div className="p-6 bg-emerald-50 border border-emerald-100 rounded-3xl">

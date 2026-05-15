@@ -1,10 +1,13 @@
 'use client';
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { Search, Calendar, ShieldAlert, CheckCircle, Shield, RefreshCw, X, AlertCircle, Trash2, Edit2, Save, XCircle, History, User, ArrowRight, Package } from 'lucide-react';
+import { Search, Calendar, ShieldAlert, CheckCircle, Shield, RefreshCw, X, AlertCircle, Trash2, Edit2, Save, XCircle, History, User, ArrowRight, Package, FileText } from 'lucide-react';
+import jsPDF from "jspdf";
+import autoTable from "jspdf-autotable";
 import { supabaseRemesas as supabase } from '@/lib/supabaseRemesas';
 import { supabase as supabasePrincipal } from '@/lib/supabase';
 import { calcularDiasRemesas } from '@/utils/remesas';
+import { calcularDescuentoARLPila } from '@/utils/calcularDescuentoARL';
 
 const fmt = (n: number) => '$' + Math.round(n).toLocaleString('es-CO');
 
@@ -141,8 +144,7 @@ const FilaTrabajadorRemesa: React.FC<{
     calcularDiasRemesas(persona.cedula, mes, year).then(setDias);
   }, [persona.cedula, mes, year, refreshTrigger]);
 
-  const descStd = 76200; // Ajustar si el valor base de remesas es diferente
-  const descuentoReal = dias !== null ? (descStd / 30) * dias : 0;
+  const descuentoReal = dias !== null ? calcularDescuentoARLPila(dias) : 0;
   const regReciente = registrosPersona.length > 0 ? registrosPersona[0] : null;
   const ultimoEstado = regReciente ? regReciente.tipo : null;
   const esActivo = (ultimoEstado === 'ingreso' || ultimoEstado === 're-ingreso' || ultimoEstado === null);
@@ -431,6 +433,85 @@ const ControlRemesas: React.FC = () => {
     setProcesando(false);
   };
 
+  const generarPDFRemesas = async () => {
+    if (personasPreFiltradas.length === 0) return;
+    setProcesando(true);
+    try {
+      const doc = new jsPDF();
+      const mesNombre = new Date(yearACalcular, mesACalcular - 1).toLocaleString('es', { month: 'long' }).toUpperCase();
+      
+      // Encabezado
+      doc.setFontSize(18);
+      doc.setTextColor(217, 119, 6); // Amber 600
+      doc.text("FUNDAMIGA - CONTROL DE REMESAS (ARL)", 14, 22);
+      
+      doc.setFontSize(11);
+      doc.setTextColor(100);
+      doc.text(`REPORTE DE AFILIACIONES Y NOVEDADES - REMESAS`, 14, 29);
+      doc.text(`PERIODO: ${mesNombre} ${yearACalcular}`, 14, 36);
+      doc.text(`GENERADO: ${new Date().toLocaleString('es-CO')}`, 14, 43);
+
+      // Línea divisoria
+      doc.setDrawColor(217, 119, 6);
+      doc.line(14, 48, 196, 48);
+
+      // Preparar datos
+      const rows = await Promise.all(personasPreFiltradas.map(async (p) => {
+        const dias = await calcularDiasRemesas(p.cedula, mesACalcular, yearACalcular);
+        const valor = calcularDescuentoARLPila(dias);
+        
+        const regs = getRegistrosPersona(p.cedula);
+        const ultimo = regs.length > 0 ? regs[0].tipo : 'activo';
+        const estadoStr = (ultimo === 'ingreso' || ultimo === 're-ingreso' || ultimo === 'activo') ? 'ACTIVO' : 'RETIRADO';
+
+        return [
+          p.nombre,
+          p.cedula,
+          "REMESAS",
+          estadoStr,
+          dias,
+          `$${valor.toLocaleString('es-CO')}`
+        ];
+      }));
+
+      // Tabla
+      autoTable(doc, {
+        startY: 55,
+        head: [['NOMBRE', 'CÉDULA', 'CARGO', 'ESTADO', 'DÍAS', 'DESCUENTO']],
+        body: rows,
+        headStyles: { fillColor: [217, 119, 6], textColor: 255, fontStyle: 'bold', fontSize: 9 },
+        alternateRowStyles: { fillColor: [254, 252, 232] },
+        styles: { fontSize: 8, cellPadding: 3, textColor: 50 },
+        columnStyles: {
+          4: { halign: 'center' },
+          5: { halign: 'right' }
+        },
+        didDrawPage: (data) => {
+          doc.setFontSize(8);
+          doc.setTextColor(150);
+          doc.text("Página " + (doc as any).internal.getNumberOfPages(), data.settings.margin.left, doc.internal.pageSize.height - 10);
+        }
+      });
+
+      // Total
+      const totalARL = rows.reduce((acc, r) => acc + parseInt(String(r[5]).replace(/[^0-9]/g, '')), 0);
+      const finalY = (doc as any).lastAutoTable.finalY || 150;
+      
+      if (finalY + 20 > doc.internal.pageSize.height) doc.addPage();
+      
+      doc.setFontSize(10);
+      doc.setTextColor(30, 41, 59);
+      doc.setFont('helvetica', 'bold');
+      doc.text(`TOTAL ESTIMADO ARL REMESAS: $${totalARL.toLocaleString('es-CO')}`, 196, (doc as any).lastAutoTable.finalY + 12, { align: 'right' });
+
+      doc.save(`Informe_Remesas_ARL_${mesNombre}_${yearACalcular}.pdf`);
+    } catch (error) {
+      console.error("Error PDF:", error);
+      alert("Hubo un error al generar el informe PDF de remesas.");
+    }
+    setProcesando(false);
+  };
+
   return (
     <div className="w-full bg-white rounded-3xl border border-gray-200 shadow-sm p-8">
       <div className="mb-8 flex items-end justify-between flex-wrap gap-4">
@@ -449,6 +530,13 @@ const ControlRemesas: React.FC = () => {
           </div>
           <button onClick={() => setShowGlobalHistory(true)} className="flex items-center gap-2 px-5 py-2.5 bg-amber-600 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-amber-700 transition-all shadow-lg shadow-amber-200">
             <History size={16} /> Historial
+          </button>
+          <button 
+            onClick={generarPDFRemesas}
+            disabled={procesando || personasPreFiltradas.length === 0}
+            className="flex items-center gap-2 px-5 py-2.5 bg-slate-800 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-900 transition-all shadow-lg shadow-slate-200 disabled:opacity-50"
+          >
+            <FileText size={16} /> Generar PDF
           </button>
           <button onClick={() => setShowGestionPersonal(true)} className="flex items-center gap-2 px-5 py-2.5 bg-slate-800 text-white rounded-2xl text-xs font-black uppercase tracking-widest hover:bg-slate-900 transition-all shadow-lg shadow-slate-200">
             <User size={16} /> Gestionar Personal

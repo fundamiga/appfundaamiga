@@ -175,6 +175,7 @@ export const LiquidacionPersonal: React.FC = () => {
   const [resultado, setResultado] = useState<Resultado | null>(null);
   const [personaEditable, setPersonaEditable] = useState<Persona | null>(null);
   const [diasARLCalculados, setDiasARLCalculados] = useState<number | null>(null);
+  const [mesSeleccionadoARL, setMesSeleccionadoARL] = useState<number>(new Date().getMonth() + 1);
   const [historial, setHistorial] = useState<LiquidacionCompleta[]>([]);
   const [historialPrivado, setHistorialPrivadoRaw] = useState<LiquidacionCompleta[]>([]);
 
@@ -600,6 +601,7 @@ export const LiquidacionPersonal: React.FC = () => {
     setDiasARLCalculados(null);
     const m = new Date().getMonth() + 1;
     const y = new Date().getFullYear();
+    setMesSeleccionadoARL(m);
     
     let dias = 0;
     if (p.cargo === 'REMESAS') {
@@ -1472,6 +1474,39 @@ export const LiquidacionPersonal: React.FC = () => {
                       accentClass="bg-blue-500/20 border border-blue-500/20" />
                     {form.tieneDescuentoSeguridad && (
                       <div className="pl-4 pr-4 py-4 mt-1 bg-blue-500/5 rounded-2xl border border-blue-500/10 grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="flex flex-col gap-1">
+                          <label className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Mes de ARL / Remesas</label>
+                          <select 
+                            className="bg-slate-900 border border-slate-700 text-white text-sm rounded-xl px-3 py-2 outline-none focus:border-blue-500 transition-colors w-full"
+                            value={mesSeleccionadoARL}
+                            onChange={async (e) => {
+                              const nuevoMes = parseInt(e.target.value);
+                              setMesSeleccionadoARL(nuevoMes);
+                              const y = new Date().getFullYear();
+                              let d = 0;
+                              if (personaSeleccionada?.cargo === 'REMESAS') {
+                                d = await calcularDiasRemesas(personaSeleccionada.cedula, nuevoMes, y);
+                              } else if (personaSeleccionada) {
+                                d = await calcularDiasARL(personaSeleccionada.cedula, nuevoMes, y);
+                              }
+                              setDiasARLCalculados(d);
+                              set('valorDescuentoSeguridad', calcularDescuentoARLPila(d));
+                            }}
+                          >
+                            <option value={1}>Enero</option>
+                            <option value={2}>Febrero</option>
+                            <option value={3}>Marzo</option>
+                            <option value={4}>Abril</option>
+                            <option value={5}>Mayo</option>
+                            <option value={6}>Junio</option>
+                            <option value={7}>Julio</option>
+                            <option value={8}>Agosto</option>
+                            <option value={9}>Septiembre</option>
+                            <option value={10}>Octubre</option>
+                            <option value={11}>Noviembre</option>
+                            <option value={12}>Diciembre</option>
+                          </select>
+                        </div>
                         <NumField 
                            label="Días a descontar (editable)" 
                            value={diasARLCalculados || 30} 

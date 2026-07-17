@@ -1,0 +1,906 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Consulta de Personal – Fundamiga</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: 'Segoe UI', system-ui, Arial, sans-serif;
+      background: linear-gradient(135deg, #e0f2fe 0%, #f0fdf4 55%, #fefce8 100%);
+      min-height: 100vh;
+    }
+
+    /* ── HEADER ── */
+    .header {
+      background: white; border-bottom: 2px solid #e2e8f0;
+      padding: 16px 24px; display: flex; align-items: center;
+      justify-content: space-between; position: sticky; top: 0; z-index: 99;
+      box-shadow: 0 2px 12px rgba(0,0,0,0.07); gap: 12px; flex-wrap: wrap;
+    }
+    .header-title { font-size: 20px; font-weight: 900; color: #1e293b; }
+    .header-sub { font-size: 11px; color: #059669; font-weight: 700;
+                  text-transform: uppercase; letter-spacing: 1px; margin-top: 3px; }
+    .dot { display:inline-block; width:8px; height:8px; background:#10b981;
+           border-radius:50%; margin-right:5px; animation: blink 2s infinite; }
+    @keyframes blink { 0%,100%{opacity:1} 50%{opacity:.3} }
+    .badge {
+      background: #f0fdf4; border: 1.5px solid #6ee7b7;
+      color: #059669; font-size: 12px; font-weight: 800;
+      padding: 6px 14px; border-radius: 100px;
+    }
+    .header-actions { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
+
+    /* Botón modo asignación */
+    #btn-modo-asignar {
+      display: flex; align-items: center; gap: 8px;
+      padding: 9px 18px; border-radius: 12px; border: 2px solid #6366f1;
+      background: #eef2ff; color: #4338ca; font-size: 13px; font-weight: 800;
+      cursor: pointer; font-family: inherit; transition: all .2s;
+    }
+    #btn-modo-asignar:hover, #btn-modo-asignar.activo {
+      background: #4338ca; color: white; border-color: #4338ca;
+    }
+    #btn-modo-asignar.activo { box-shadow: 0 0 0 3px rgba(99,102,241,.25); }
+
+    /* ── LAYOUT PRINCIPAL (2 columnas en modo asignar) ── */
+    .main-layout {
+      display: flex; gap: 20px; max-width: 1300px;
+      margin: 0 auto; padding: 24px 18px 60px;
+      align-items: flex-start;
+    }
+    .col-lista { flex: 1; min-width: 0; }
+    .col-panel {
+      width: 360px; flex-shrink: 0;
+      display: none; flex-direction: column; gap: 14px;
+    }
+    .col-panel.visible { display: flex; }
+
+    /* ── BUSCADOR ── */
+    .search-label { display: block; font-size: 14px; font-weight: 800;
+                    color: #334155; margin-bottom: 10px; }
+    .search-box {
+      display: flex; align-items: center; gap: 12px;
+      background: white; border: 2.5px solid #cbd5e1;
+      border-radius: 16px; padding: 13px 18px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+      transition: border-color .2s, box-shadow .2s;
+    }
+    .search-box:focus-within { border-color: #10b981; box-shadow: 0 0 0 4px rgba(16,185,129,.13); }
+    .search-icon { font-size: 20px; flex-shrink: 0; }
+    #buscar {
+      flex: 1; border: none; outline: none;
+      font-size: 17px; font-weight: 600; color: #1e293b;
+      background: transparent; font-family: inherit;
+    }
+    #buscar::placeholder { color: #94a3b8; font-weight: 500; }
+    #btn-limpiar {
+      background: #f1f5f9; border: none; border-radius: 8px;
+      width: 32px; height: 32px; cursor: pointer; font-size: 15px;
+      display: none; align-items: center; justify-content: center;
+      color: #64748b; transition: background .15s; flex-shrink: 0;
+    }
+    #btn-limpiar:hover { background: #fee2e2; color: #ef4444; }
+    .counter { font-size: 13px; font-weight: 700; color: #64748b; margin: 10px 0 14px; }
+
+    /* ── CARDS ── */
+    #lista { display: flex; flex-direction: column; gap: 10px; }
+    .card {
+      background: white; border-radius: 16px;
+      border: 2px solid #e2e8f0; padding: 16px 18px;
+      transition: border-color .15s, box-shadow .15s, transform .1s;
+      cursor: default; position: relative;
+    }
+    .card:hover { border-color: #10b981; box-shadow: 0 4px 20px rgba(16,185,129,.13); transform: translateY(-1px); }
+    .card.seleccionada {
+      border-color: #6366f1 !important;
+      box-shadow: 0 0 0 3px rgba(99,102,241,.18) !important;
+      background: #f5f3ff !important;
+    }
+    .card.asignada {
+      border-color: #10b981 !important;
+      background: #f0fdf4 !important;
+      opacity: .7;
+    }
+    .card-top { display: flex; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+    .avatar {
+      width: 46px; height: 46px; border-radius: 50%;
+      background: linear-gradient(135deg,#10b981,#0d9488);
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px; font-weight: 900; color: white;
+      flex-shrink: 0; box-shadow: 0 2px 10px rgba(16,185,129,.3); margin-top: 2px;
+    }
+    .info { flex: 1; min-width: 0; }
+    .info-nombre {
+      font-size: 16px; font-weight: 900; color: #1e293b;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-bottom: 7px;
+    }
+    .info-fila { display: flex; flex-wrap: wrap; gap: 7px; align-items: center; }
+    .cedula-pill {
+      display: inline-flex; align-items: center; gap: 5px;
+      background: #f1f5f9; border: 1.5px solid #cbd5e1;
+      border-radius: 8px; padding: 4px 11px;
+    }
+    .cedula-pill-label { font-size: 10px; font-weight: 900; color: #94a3b8;
+                         text-transform: uppercase; letter-spacing: 0.8px; }
+    .cedula-pill-valor { font-size: 13px; font-weight: 800; color: #1e293b;
+                         font-family: monospace; letter-spacing: 1px; }
+    .cargo-badge { display: inline-block; font-size: 10px; font-weight: 900;
+                   padding: 4px 11px; border-radius: 100px; border: 1.5px solid;
+                   text-transform: uppercase; letter-spacing: .5px; }
+
+    /* Checkbox visual */
+    .card-check {
+      width: 24px; height: 24px; border-radius: 8px;
+      border: 2.5px solid #cbd5e1; background: white;
+      display: none; align-items: center; justify-content: center;
+      flex-shrink: 0; margin-top: 11px; transition: all .15s; cursor: pointer;
+    }
+    .modo-asignar .card-check { display: flex; }
+    .modo-asignar .card { cursor: pointer; }
+    .card.seleccionada .card-check {
+      background: #6366f1; border-color: #6366f1; color: white; font-size: 14px;
+    }
+    .card.asignada .card-check {
+      background: #10b981; border-color: #10b981; color: white; font-size: 14px;
+    }
+    .punto-tag {
+      display: none; font-size: 10px; font-weight: 900; color: #059669;
+      background: #d1fae5; border-radius: 6px; padding: 3px 9px;
+      margin-top: 6px; width: fit-content;
+    }
+    .card.asignada .punto-tag { display: block; }
+
+    /* Botones copiar (modo consulta) */
+    .card-btns {
+      display: flex; gap: 10px;
+      padding-top: 12px; border-top: 1.5px solid #f1f5f9;
+    }
+    .modo-asignar .card-btns { display: none; }
+    .btn-copiar {
+      flex: 1; display: flex; align-items: center; justify-content: center; gap: 8px;
+      padding: 11px 10px; border-radius: 12px; border: 2px solid;
+      font-size: 13px; font-weight: 800; cursor: pointer;
+      transition: all .15s; font-family: inherit;
+    }
+    .btn-nombre { background:#eff6ff; color:#1d4ed8; border-color:#bfdbfe; }
+    .btn-nombre:hover { background:#1d4ed8; color:white; border-color:#1d4ed8; }
+    .btn-cedula { background:#f0fdf4; color:#059669; border-color:#6ee7b7; }
+    .btn-cedula:hover { background:#059669; color:white; border-color:#059669; }
+    .btn-ok { background:#d1fae5 !important; color:#059669 !important; border-color:#6ee7b7 !important; }
+
+    /* ── PANEL DERECHO ── */
+    .panel-card {
+      background: white; border-radius: 20px; border: 2px solid #e2e8f0;
+      box-shadow: 0 4px 20px rgba(0,0,0,0.08); overflow: hidden;
+    }
+    .panel-section-title {
+      font-size: 13px; font-weight: 900; color: #475569;
+      text-transform: uppercase; letter-spacing: 1px;
+      padding: 14px 18px 10px; border-bottom: 1.5px solid #f1f5f9;
+      background: #fafafa;
+    }
+    .panel-body { padding: 14px 16px; }
+
+    /* Selector de punto */
+    .punto-selector { display: flex; flex-direction: column; gap: 8px; }
+    .punto-btn {
+      display: flex; align-items: center; gap: 10px;
+      padding: 11px 14px; border-radius: 12px; border: 2px solid #e2e8f0;
+      background: white; cursor: pointer; font-family: inherit;
+      font-size: 13px; font-weight: 700; color: #334155;
+      transition: all .15s; text-align: left;
+    }
+    .punto-btn:hover { border-color: #6366f1; background: #eef2ff; color: #4338ca; }
+    .punto-btn.activo-punto {
+      border-color: #6366f1; background: #eef2ff; color: #4338ca;
+      box-shadow: 0 0 0 3px rgba(99,102,241,.15);
+    }
+    .punto-btn .punto-count {
+      margin-left: auto; background: #e0e7ff; color: #4338ca;
+      font-size: 11px; font-weight: 900; padding: 2px 8px; border-radius: 20px;
+    }
+    .punto-btn.activo-punto .punto-count { background: #4338ca; color: white; }
+
+    /* Punto nuevo */
+    .nuevo-punto-row {
+      display: flex; gap: 8px; margin-top: 10px;
+    }
+    #input-nuevo-punto {
+      flex: 1; border: 2px solid #e2e8f0; border-radius: 10px;
+      padding: 9px 12px; font-family: inherit; font-size: 13px;
+      font-weight: 600; color: #1e293b; outline: none; transition: border-color .2s;
+    }
+    #input-nuevo-punto:focus { border-color: #6366f1; }
+    #btn-agregar-punto {
+      background: #6366f1; color: white; border: none; border-radius: 10px;
+      padding: 9px 14px; font-size: 18px; cursor: pointer;
+      transition: background .15s; flex-shrink: 0;
+    }
+    #btn-agregar-punto:hover { background: #4338ca; }
+
+    /* Acción asignar */
+    .accion-asignar {
+      display: flex; flex-direction: column; gap: 10px; padding: 14px 16px;
+      border-top: 1.5px solid #f1f5f9;
+    }
+    .seleccion-info {
+      font-size: 13px; font-weight: 700; color: #64748b;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .seleccion-count {
+      background: #6366f1; color: white; font-size: 12px; font-weight: 900;
+      padding: 2px 10px; border-radius: 20px;
+    }
+    #btn-asignar {
+      padding: 12px; border-radius: 12px; border: none;
+      background: linear-gradient(135deg, #6366f1, #8b5cf6);
+      color: white; font-size: 14px; font-weight: 800; cursor: pointer;
+      font-family: inherit; transition: opacity .15s, transform .1s;
+      box-shadow: 0 4px 14px rgba(99,102,241,.35);
+    }
+    #btn-asignar:hover { opacity: .9; transform: translateY(-1px); }
+    #btn-asignar:disabled { opacity: .4; cursor: not-allowed; transform: none; }
+    #btn-limpiar-sel {
+      padding: 9px; border-radius: 10px; border: 2px solid #e2e8f0;
+      background: white; color: #64748b; font-size: 13px; font-weight: 700;
+      cursor: pointer; font-family: inherit; transition: all .15s;
+    }
+    #btn-limpiar-sel:hover { border-color: #ef4444; color: #ef4444; background: #fef2f2; }
+
+    /* Resumen de grupos */
+    .grupo-item {
+      border: 1.5px solid #e2e8f0; border-radius: 14px;
+      overflow: hidden; margin-bottom: 10px;
+    }
+    .grupo-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 11px 14px; background: #f8fafc; cursor: pointer;
+      gap: 8px; border-bottom: 1.5px solid #e2e8f0;
+    }
+    .grupo-header:hover { background: #f1f5f9; }
+    .grupo-nombre { font-size: 13px; font-weight: 900; color: #334155; flex: 1; }
+    .grupo-badge-count {
+      background: #ddd6fe; color: #5b21b6; font-size: 11px; font-weight: 900;
+      padding: 3px 10px; border-radius: 20px; flex-shrink: 0;
+    }
+    .grupo-toggle { font-size: 12px; color: #94a3b8; flex-shrink: 0; }
+    .grupo-body { padding: 10px 14px; display: flex; flex-direction: column; gap: 6px; }
+    .grupo-trabajador {
+      display: flex; align-items: center; justify-content: space-between;
+      gap: 8px; padding: 8px 10px; border-radius: 10px;
+      background: #f8fafc; font-size: 13px;
+    }
+    .gt-nombre { font-weight: 700; color: #1e293b; flex: 1; min-width: 0;
+                  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .gt-cargo { font-size: 10px; font-weight: 800; color: #64748b;
+                text-transform: uppercase; letter-spacing: .5px; }
+    .gt-quitar {
+      background: #fee2e2; border: none; border-radius: 6px;
+      color: #ef4444; cursor: pointer; padding: 4px 8px;
+      font-size: 13px; line-height: 1; transition: background .15s; flex-shrink: 0;
+    }
+    .gt-quitar:hover { background: #ef4444; color: white; }
+    .grupo-acciones {
+      display: flex; gap: 8px; padding: 10px 14px 14px; flex-wrap: wrap;
+    }
+    .btn-grupo-accion {
+      flex: 1; padding: 8px 10px; border-radius: 10px; border: 2px solid;
+      font-size: 12px; font-weight: 800; cursor: pointer; font-family: inherit;
+      transition: all .15s; display: flex; align-items: center; justify-content: center; gap: 6px;
+    }
+    .btn-exportar-grupo { background:#eff6ff; color:#1d4ed8; border-color:#bfdbfe; }
+    .btn-exportar-grupo:hover { background:#1d4ed8; color:white; border-color:#1d4ed8; }
+    .btn-borrar-grupo { background:#fef2f2; color:#ef4444; border-color:#fecaca; }
+    .btn-borrar-grupo:hover { background:#ef4444; color:white; border-color:#ef4444; }
+    .grupo-vacio { padding: 16px; text-align: center; font-size: 13px; color: #94a3b8; font-weight: 600; }
+
+    /* Botón exportar todo */
+    #btn-exportar-todo {
+      width: 100%; padding: 13px; border-radius: 14px; border: none;
+      background: linear-gradient(135deg, #059669, #0d9488);
+      color: white; font-size: 14px; font-weight: 800; cursor: pointer;
+      font-family: inherit; transition: opacity .15s, transform .1s;
+      box-shadow: 0 4px 14px rgba(5,150,105,.3);
+      display: flex; align-items: center; justify-content: center; gap: 8px;
+    }
+    #btn-exportar-todo:hover { opacity: .9; transform: translateY(-1px); }
+
+    /* ── ESTADO (cargando / error) ── */
+    .estado { margin: 60px auto; text-align:center; }
+    .estado-emoji { font-size:52px; margin-bottom:16px; }
+    .estado-titulo { font-size:18px; font-weight:800; color:#334155; margin-bottom:8px; }
+    .estado-sub { font-size:14px; color:#94a3b8; font-weight:500; }
+    .spin { animation:girar 1s linear infinite; display:inline-block; }
+    @keyframes girar { to { transform: rotate(360deg); } }
+    #btn-reintentar {
+      margin-top:20px; padding:12px 30px; background:#059669; color:white;
+      border:none; border-radius:12px; font-size:15px; font-weight:800;
+      cursor:pointer; font-family:inherit; transition:background .15s;
+    }
+    #btn-reintentar:hover { background:#047857; }
+
+    /* ── MODAL IMPRESIÓN ── */
+    #modal-print {
+      display: none; position: fixed; inset: 0; z-index: 200;
+      background: rgba(15,23,42,.55); backdrop-filter: blur(4px);
+      align-items: center; justify-content: center; padding: 20px;
+    }
+    #modal-print.visible { display: flex; }
+    .modal-box {
+      background: white; border-radius: 24px; padding: 28px 28px 24px;
+      max-width: 640px; width: 100%;
+      box-shadow: 0 24px 60px rgba(0,0,0,.25); max-height: 90vh;
+      overflow-y: auto;
+    }
+    .modal-title { font-size: 18px; font-weight: 900; color: #1e293b; margin-bottom: 4px; }
+    .modal-sub { font-size: 13px; color: #64748b; font-weight: 600; margin-bottom: 20px; }
+    .modal-grupo-bloque { margin-bottom: 20px; }
+    .modal-grupo-nombre {
+      font-size: 15px; font-weight: 900; color: #4338ca;
+      padding-bottom: 6px; border-bottom: 2px solid #e0e7ff; margin-bottom: 10px;
+      display: flex; align-items: center; gap: 8px;
+    }
+    .modal-grupo-nombre span {
+      background: #ddd6fe; color: #5b21b6; font-size: 11px;
+      padding: 2px 9px; border-radius: 20px;
+    }
+    .modal-tabla { width: 100%; border-collapse: collapse; font-size: 13px; }
+    .modal-tabla th {
+      background: #f8fafc; color: #475569; font-size: 10px; font-weight: 900;
+      text-transform: uppercase; letter-spacing: .7px;
+      padding: 8px 12px; text-align: left; border-bottom: 2px solid #e2e8f0;
+    }
+    .modal-tabla td {
+      padding: 9px 12px; border-bottom: 1px solid #f1f5f9;
+      color: #1e293b; font-weight: 600;
+    }
+    .modal-tabla tr:last-child td { border-bottom: none; }
+    .modal-btns { display: flex; gap: 12px; margin-top: 20px; }
+    .modal-btn {
+      flex: 1; padding: 12px; border-radius: 12px; border: 2px solid;
+      font-size: 14px; font-weight: 800; cursor: pointer;
+      font-family: inherit; transition: all .15s;
+    }
+    .modal-btn-print { background:#4338ca; color:white; border-color:#4338ca; }
+    .modal-btn-print:hover { background:#3730a3; border-color:#3730a3; }
+    .modal-btn-cerrar { background:white; color:#64748b; border-color:#e2e8f0; }
+    .modal-btn-cerrar:hover { border-color:#94a3b8; color:#334155; }
+
+    @media print {
+      body * { visibility: hidden; }
+      #area-print, #area-print * { visibility: visible; }
+      #area-print { position: fixed; inset: 0; background: white; padding: 30px; }
+    }
+
+    .footer { text-align:center; padding:20px; font-size:12px; color:#94a3b8; font-weight:600; }
+
+    @media (max-width:900px) {
+      .main-layout { flex-direction: column; }
+      .col-panel { width: 100%; }
+    }
+    @media (max-width:520px) {
+      .card-btns { flex-direction:column; }
+      .avatar { width:40px; height:40px; font-size:17px; }
+      .info-nombre { font-size:15px; }
+    }
+
+    /* Toast */
+    #toast {
+      position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
+      background: #1e293b; color: white; font-size: 14px; font-weight: 700;
+      padding: 12px 24px; border-radius: 100px; z-index: 300;
+      transition: transform .3s cubic-bezier(.34,1.56,.64,1), opacity .3s;
+      opacity: 0; pointer-events: none; white-space: nowrap;
+    }
+    #toast.show { transform: translateX(-50%) translateY(0); opacity: 1; }
+  </style>
+</head>
+<body>
+
+  <div class="header">
+    <div>
+      <div class="header-title">🔍 Consulta de Personal</div>
+      <div class="header-sub"><span class="dot"></span>Fundamiga · Solo lectura</div>
+    </div>
+    <div class="header-actions">
+      <button id="btn-modo-asignar">📌 Asignar a Puntos</button>
+      <div class="badge" id="total-badge">Cargando…</div>
+    </div>
+  </div>
+
+  <!-- Modal impresión -->
+  <div id="modal-print">
+    <div class="modal-box">
+      <div class="modal-title">📋 Resumen de Grupos</div>
+      <div class="modal-sub" id="modal-fecha"></div>
+      <div id="area-print"></div>
+      <div class="modal-btns">
+        <button class="modal-btn modal-btn-print" onclick="window.print()">🖨️ Imprimir</button>
+        <button class="modal-btn modal-btn-cerrar" id="btn-cerrar-modal">✕ Cerrar</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <div class="main-layout" id="main-layout">
+
+    <!-- Columna lista -->
+    <div class="col-lista">
+      <label class="search-label" for="buscar">Busca por nombre, cédula o cargo:</label>
+      <div class="search-box">
+        <span class="search-icon">🔎</span>
+        <input id="buscar" type="text" placeholder="Escribe aquí el nombre o la cédula…" autocomplete="off" autofocus />
+        <button id="btn-limpiar" title="Limpiar">✕</button>
+      </div>
+      <div class="counter" id="contador"></div>
+      <div id="lista"></div>
+    </div>
+
+    <!-- Panel derecho: asignación -->
+    <div class="col-panel" id="col-panel">
+
+      <!-- Seleccionar punto -->
+      <div class="panel-card">
+        <div class="panel-section-title">📍 Puntos de Trabajo</div>
+        <div class="panel-body">
+          <div class="punto-selector" id="punto-selector"></div>
+          <div class="nuevo-punto-row">
+            <input id="input-nuevo-punto" type="text" placeholder="Nuevo punto…" maxlength="40" />
+            <button id="btn-agregar-punto" title="Agregar punto">+</button>
+          </div>
+        </div>
+        <div class="accion-asignar">
+          <div class="seleccion-info">
+            Seleccionados: <span class="seleccion-count" id="sel-count">0</span>
+          </div>
+          <button id="btn-asignar" disabled>✅ Asignar al punto seleccionado</button>
+          <button id="btn-limpiar-sel">🗑 Limpiar selección</button>
+        </div>
+      </div>
+
+      <!-- Grupos asignados -->
+      <div class="panel-card">
+        <div class="panel-section-title">👥 Grupos Asignados</div>
+        <div class="panel-body" style="padding-bottom:6px;">
+          <div id="grupos-resumen"></div>
+        </div>
+        <div style="padding:0 14px 14px;">
+          <button id="btn-exportar-todo">📄 Ver / Imprimir todo</button>
+        </div>
+      </div>
+
+    </div>
+  </div><!-- /main-layout -->
+
+  <div class="footer">Fundamiga · Consulta de Personal · Solo lectura</div>
+
+<script>
+  // ── Supabase ─────────────────────────────────────────────────────────────
+  const SUPA_URL = 'https://upgrsqatxeokoagcwbks.supabase.co';
+  const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVwZ3JzcWF0eGVva29hZ2N3YmtzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ3NTM0NzUsImV4cCI6MjA5MDMyOTQ3NX0.b87zEqrr-dznnsOwX58mKHlVcgLjYEJkTTJwaf5-KCQ';
+
+  async function fetchTrabajadores() {
+    const res = await fetch(
+      `${SUPA_URL}/rest/v1/trabajadores?select=id,nombre,cedula,cargo&order=nombre`,
+      { headers: { 'apikey': SUPA_KEY, 'Authorization': 'Bearer ' + SUPA_KEY } }
+    );
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    return res.json();
+  }
+
+  // ── Colores por cargo ─────────────────────────────────────────────────────
+  const COLORES = {
+    'CONTRATISTAS DE ADMINISTRACION': ['#d1fae5','#065f46','#6ee7b7'],
+    '5 - 6':    ['#dbeafe','#1e3a8a','#93c5fd'],
+    '6 - 6':    ['#ede9fe','#4c1d95','#c4b5fd'],
+    'CARTON C': ['#ffedd5','#7c2d12','#fdba74'],
+    'GUACANDA': ['#ccfbf1','#134e4a','#5eead4'],
+    'TERCERA':  ['#fce7f3','#831843','#f9a8d4'],
+    'ROZO':     ['#fef3c7','#78350f','#fcd34d'],
+    '2 - 10':   ['#cffafe','#164e63','#67e8f9'],
+    'MAYORISTA':['#e0e7ff','#1e1b4b','#a5b4fc'],
+    'GUABINAS': ['#ffe4e6','#881337','#fda4af'],
+    'BOLIVAR':  ['#ecfccb','#365314','#a3e635'],
+    'REMESAS':  ['#fefce8','#713f12','#fde047'],
+  };
+
+  // ── Estado ────────────────────────────────────────────────────────────────
+  let todos = [];
+  let modoAsignar = false;
+  let seleccionados = new Set();   // ids seleccionados actualmente
+  // grupos: { [puntoId]: { nombre: string, trabajadores: [{id, nombre, cedula, cargo}] } }
+  let grupos = {};
+  // puntos disponibles
+  let puntos = [
+    'Belalcázar Guabinas',
+    'Belalcázar Principal',
+    'Guabinas Centro',
+    'Bolivar',
+    'Remesas',
+  ];
+  let puntoActivo = null;   // nombre del punto activo
+
+  // ── DOM ───────────────────────────────────────────────────────────────────
+  const lista        = document.getElementById('lista');
+  const contador     = document.getElementById('contador');
+  const badge        = document.getElementById('total-badge');
+  const inputBusc    = document.getElementById('buscar');
+  const btnLimpiar   = document.getElementById('btn-limpiar');
+  const btnModo      = document.getElementById('btn-modo-asignar');
+  const colPanel     = document.getElementById('col-panel');
+  const mainLayout   = document.getElementById('main-layout');
+  const selCount     = document.getElementById('sel-count');
+  const btnAsignar   = document.getElementById('btn-asignar');
+  const btnLimpiarSel= document.getElementById('btn-limpiar-sel');
+  const puntoSel     = document.getElementById('punto-selector');
+  const gruposRes    = document.getElementById('grupos-resumen');
+  const inputNuevoPunto = document.getElementById('input-nuevo-punto');
+  const btnAgregarPunto = document.getElementById('btn-agregar-punto');
+  const btnExportarTodo = document.getElementById('btn-exportar-todo');
+  const modalPrint   = document.getElementById('modal-print');
+  const btnCerrarModal = document.getElementById('btn-cerrar-modal');
+  const modalFecha   = document.getElementById('modal-fecha');
+  const areaPrint    = document.getElementById('area-print');
+  const toastEl      = document.getElementById('toast');
+
+  // ── Toast ─────────────────────────────────────────────────────────────────
+  let toastTimer;
+  function toast(msg) {
+    clearTimeout(toastTimer);
+    toastEl.textContent = msg;
+    toastEl.classList.add('show');
+    toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2500);
+  }
+
+  // ── Modo asignar toggle ───────────────────────────────────────────────────
+  btnModo.addEventListener('click', () => {
+    modoAsignar = !modoAsignar;
+    btnModo.classList.toggle('activo', modoAsignar);
+    btnModo.textContent = modoAsignar ? '❌ Salir de Asignación' : '📌 Asignar a Puntos';
+    colPanel.classList.toggle('visible', modoAsignar);
+    mainLayout.classList.toggle('modo-asignar', modoAsignar);
+    if (!modoAsignar) { seleccionados.clear(); actualizarSel(); }
+    renderizar(inputBusc.value);
+  });
+
+  // ── Puntos de trabajo ─────────────────────────────────────────────────────
+  function renderPuntos() {
+    puntoSel.innerHTML = '';
+    puntos.forEach(p => {
+      const count = grupos[p] ? grupos[p].length : 0;
+      const btn = document.createElement('button');
+      btn.className = 'punto-btn' + (puntoActivo === p ? ' activo-punto' : '');
+      btn.innerHTML = `📍 ${p} <span class="punto-count">${count}</span>`;
+      btn.addEventListener('click', () => {
+        puntoActivo = (puntoActivo === p) ? null : p;
+        renderPuntos();
+        actualizarSel();
+      });
+      puntoSel.appendChild(btn);
+    });
+  }
+
+  function agregarPunto() {
+    const nombre = inputNuevoPunto.value.trim();
+    if (!nombre) return;
+    if (puntos.find(p => p.toLowerCase() === nombre.toLowerCase())) {
+      toast('⚠️ Ese punto ya existe'); return;
+    }
+    puntos.push(nombre);
+    puntoActivo = nombre;
+    inputNuevoPunto.value = '';
+    renderPuntos();
+    actualizarSel();
+    toast('✅ Punto agregado');
+  }
+
+  btnAgregarPunto.addEventListener('click', agregarPunto);
+  inputNuevoPunto.addEventListener('keydown', e => { if (e.key === 'Enter') agregarPunto(); });
+
+  // ── Selección ─────────────────────────────────────────────────────────────
+  function actualizarSel() {
+    selCount.textContent = seleccionados.size;
+    btnAsignar.disabled = seleccionados.size === 0 || !puntoActivo;
+    btnAsignar.textContent = puntoActivo
+      ? `✅ Asignar a "${puntoActivo}" (${seleccionados.size})`
+      : '✅ Asignar al punto seleccionado';
+  }
+
+  function toggleSeleccion(id) {
+    // No dejar seleccionar si ya está asignado a algún punto
+    const yaAsignado = Object.values(grupos).some(arr => arr.some(t => t.id === id));
+    if (yaAsignado) { toast('⚠️ Este trabajador ya está asignado a un punto'); return; }
+    if (seleccionados.has(id)) seleccionados.delete(id);
+    else seleccionados.add(id);
+    actualizarSel();
+    // actualizar visualmente la card
+    const card = document.querySelector(`.card[data-id="${id}"]`);
+    if (card) {
+      card.classList.toggle('seleccionada', seleccionados.has(id));
+      const chk = card.querySelector('.card-check');
+      if (chk) chk.textContent = seleccionados.has(id) ? '✓' : '';
+    }
+  }
+
+  btnLimpiarSel.addEventListener('click', () => {
+    seleccionados.clear();
+    actualizarSel();
+    renderizar(inputBusc.value);
+  });
+
+  btnAsignar.addEventListener('click', () => {
+    if (!puntoActivo || seleccionados.size === 0) return;
+    if (!grupos[puntoActivo]) grupos[puntoActivo] = [];
+    seleccionados.forEach(id => {
+      const t = todos.find(x => x.id === id);
+      if (t && !grupos[puntoActivo].some(x => x.id === id)) {
+        grupos[puntoActivo].push(t);
+      }
+    });
+    toast(`✅ ${seleccionados.size} trabajador(es) asignados a "${puntoActivo}"`);
+    seleccionados.clear();
+    actualizarSel();
+    renderPuntos();
+    renderGrupos();
+    renderizar(inputBusc.value);
+  });
+
+  // ── Grupos resumen ────────────────────────────────────────────────────────
+  function renderGrupos() {
+    const puntosConDatos = puntos.filter(p => grupos[p] && grupos[p].length > 0);
+    if (puntosConDatos.length === 0) {
+      gruposRes.innerHTML = '<div class="grupo-vacio">Aún no hay grupos asignados.<br>Selecciona trabajadores y asígnalos.</div>';
+      return;
+    }
+    gruposRes.innerHTML = '';
+    puntosConDatos.forEach(p => {
+      const arr = grupos[p];
+      const div = document.createElement('div');
+      div.className = 'grupo-item';
+      div.innerHTML = `
+        <div class="grupo-header" data-punto="${p}">
+          <span class="grupo-nombre">📍 ${p}</span>
+          <span class="grupo-badge-count">${arr.length} personas</span>
+          <span class="grupo-toggle">▾</span>
+        </div>
+        <div class="grupo-body">
+          ${arr.map(t => `
+            <div class="grupo-trabajador" data-id="${t.id}" data-punto="${p}">
+              <div>
+                <div class="gt-nombre">${t.nombre}</div>
+                <div class="gt-cargo">${t.cargo}</div>
+              </div>
+              <button class="gt-quitar" data-id="${t.id}" data-punto="${p}" title="Quitar">✕</button>
+            </div>`).join('')}
+        </div>
+        <div class="grupo-acciones">
+          <button class="btn-grupo-accion btn-exportar-grupo" data-punto="${p}">📋 Ver lista</button>
+          <button class="btn-grupo-accion btn-borrar-grupo" data-punto="${p}">🗑 Vaciar</button>
+        </div>`;
+      gruposRes.appendChild(div);
+    });
+
+    // Eventos quitar
+    gruposRes.querySelectorAll('.gt-quitar').forEach(btn => {
+      btn.addEventListener('click', e => {
+        e.stopPropagation();
+        const id  = parseInt(btn.dataset.id);
+        const pto = btn.dataset.punto;
+        grupos[pto] = grupos[pto].filter(t => t.id !== id);
+        renderPuntos();
+        renderGrupos();
+        renderizar(inputBusc.value);
+        toast('🗑 Trabajador removido del grupo');
+      });
+    });
+
+    // Colapsar/expandir
+    gruposRes.querySelectorAll('.grupo-header').forEach(h => {
+      h.addEventListener('click', () => {
+        const body   = h.nextElementSibling;
+        const toggle = h.querySelector('.grupo-toggle');
+        const open   = body.style.display !== 'none';
+        body.style.display = open ? 'none' : '';
+        toggle.textContent = open ? '▸' : '▾';
+      });
+    });
+
+    // Vaciar grupo
+    gruposRes.querySelectorAll('.btn-borrar-grupo').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const pto = btn.dataset.punto;
+        if (!confirm(`¿Vaciar el grupo "${pto}"? Los trabajadores quedarán libres.`)) return;
+        grupos[pto] = [];
+        renderPuntos();
+        renderGrupos();
+        renderizar(inputBusc.value);
+        toast(`🗑 Grupo "${pto}" vaciado`);
+      });
+    });
+
+    // Ver lista de un grupo
+    gruposRes.querySelectorAll('.btn-exportar-grupo').forEach(btn => {
+      btn.addEventListener('click', () => {
+        abrirModal([btn.dataset.punto]);
+      });
+    });
+  }
+
+  // ── Modal impresión ───────────────────────────────────────────────────────
+  function abrirModal(puntosAMostrar) {
+    const ahora = new Date().toLocaleDateString('es-CO', {
+      weekday:'long', year:'numeric', month:'long', day:'numeric'
+    });
+    modalFecha.textContent = `Generado: ${ahora}`;
+
+    areaPrint.innerHTML = '';
+    puntosAMostrar.forEach(p => {
+      const arr = grupos[p] || [];
+      if (arr.length === 0) return;
+      const bloque = document.createElement('div');
+      bloque.className = 'modal-grupo-bloque';
+      bloque.innerHTML = `
+        <div class="modal-grupo-nombre">
+          📍 ${p} <span>${arr.length} personas</span>
+        </div>
+        <table class="modal-tabla">
+          <thead><tr>
+            <th>#</th><th>Nombre</th><th>Cédula</th><th>Cargo</th>
+          </tr></thead>
+          <tbody>
+            ${arr.map((t,i) => `<tr>
+              <td>${i+1}</td>
+              <td>${t.nombre}</td>
+              <td>${t.cedula || '—'}</td>
+              <td>${t.cargo}</td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`;
+      areaPrint.appendChild(bloque);
+    });
+
+    modalPrint.classList.add('visible');
+  }
+
+  btnExportarTodo.addEventListener('click', () => {
+    const conDatos = puntos.filter(p => grupos[p] && grupos[p].length > 0);
+    if (conDatos.length === 0) { toast('⚠️ No hay grupos asignados todavía'); return; }
+    abrirModal(conDatos);
+  });
+
+  btnCerrarModal.addEventListener('click', () => modalPrint.classList.remove('visible'));
+  modalPrint.addEventListener('click', e => { if (e.target === modalPrint) modalPrint.classList.remove('visible'); });
+
+  // ── Render cards ──────────────────────────────────────────────────────────
+  function mostrarEstado(emoji, titulo, sub, conBoton) {
+    lista.innerHTML = `
+      <div class="estado">
+        <div class="estado-emoji">${emoji}</div>
+        <p class="estado-titulo">${titulo}</p>
+        <p class="estado-sub">${sub}</p>
+        ${conBoton ? '<button id="btn-reintentar">🔄 Reintentar</button>' : ''}
+      </div>`;
+    if (conBoton) document.getElementById('btn-reintentar').addEventListener('click', cargar);
+  }
+
+  function copiar(texto, btn, labelOrig) {
+    const confirmar = () => {
+      btn.innerHTML = '✅ &nbsp;¡Copiado!';
+      btn.classList.add('btn-ok');
+      setTimeout(() => { btn.innerHTML = labelOrig; btn.classList.remove('btn-ok'); }, 2200);
+    };
+    if (navigator.clipboard) navigator.clipboard.writeText(texto).then(confirmar).catch(confirmar);
+    else {
+      const t = document.createElement('textarea');
+      t.value = texto; document.body.appendChild(t);
+      t.select(); document.execCommand('copy');
+      document.body.removeChild(t); confirmar();
+    }
+  }
+
+  function crearCard(t) {
+    const col  = COLORES[t.cargo] || ['#f8fafc','#475569','#cbd5e1'];
+    const yaAsignado = Object.entries(grupos).find(([,arr]) => arr.some(x => x.id === t.id));
+    const esSel = seleccionados.has(t.id);
+
+    const card = document.createElement('div');
+    card.className = 'card' + (esSel ? ' seleccionada' : '') + (yaAsignado ? ' asignada' : '');
+    card.dataset.id = t.id;
+
+    const LBL_NOMBRE = '📋 &nbsp;Copiar Nombre';
+    const LBL_CEDULA = '🪪 &nbsp;Copiar Cédula';
+
+    card.innerHTML = `
+      <div class="card-top">
+        <div class="card-check">${esSel ? '✓' : (yaAsignado ? '✓' : '')}</div>
+        <div class="avatar">${t.nombre.charAt(0).toUpperCase()}</div>
+        <div class="info">
+          <div class="info-nombre" title="${t.nombre}">${t.nombre}</div>
+          <div class="info-fila">
+            <span class="cedula-pill">
+              <span class="cedula-pill-label">Cédula</span>
+              <span class="cedula-pill-valor">${t.cedula || '—'}</span>
+            </span>
+            <span class="cargo-badge"
+              style="background:${col[0]};color:${col[1]};border-color:${col[2]}"
+            >${t.cargo}</span>
+          </div>
+          <div class="punto-tag">${yaAsignado ? '📍 ' + yaAsignado[0] : ''}</div>
+        </div>
+      </div>
+      <div class="card-btns">
+        <button class="btn-copiar btn-nombre">${LBL_NOMBRE}</button>
+        ${t.cedula ? `<button class="btn-copiar btn-cedula">${LBL_CEDULA}</button>` : ''}
+      </div>`;
+
+    // Copiar (modo consulta)
+    const btns = card.querySelectorAll('.btn-copiar');
+    btns[0].addEventListener('click', e => { e.stopPropagation(); copiar(t.nombre, btns[0], LBL_NOMBRE); });
+    if (btns[1]) btns[1].addEventListener('click', e => { e.stopPropagation(); copiar(t.cedula, btns[1], LBL_CEDULA); });
+
+    // Selección (modo asignar)
+    card.addEventListener('click', () => {
+      if (!modoAsignar) return;
+      toggleSeleccion(t.id);
+    });
+
+    return card;
+  }
+
+  function renderizar(q) {
+    q = (q || '').toLowerCase().trim();
+    const filtrados = q
+      ? todos.filter(t =>
+          t.nombre.toLowerCase().includes(q) ||
+          t.cedula.includes(q) ||
+          t.cargo.toLowerCase().includes(q))
+      : todos;
+
+    lista.innerHTML = '';
+    if (filtrados.length === 0) {
+      mostrarEstado('🤷', 'No se encontró nadie', 'Intenta con otro nombre o cédula', false);
+      contador.textContent = 'Sin resultados';
+      return;
+    }
+    filtrados.forEach(t => lista.appendChild(crearCard(t)));
+    contador.textContent = q
+      ? `Mostrando ${filtrados.length} de ${todos.length} trabajadores`
+      : `${todos.length} trabajadores en total`;
+  }
+
+  async function cargar() {
+    badge.textContent = 'Cargando…';
+    contador.textContent = '';
+    mostrarEstado('<span class="spin">⏳</span>', 'Cargando trabajadores…', 'Conectando…', false);
+    try {
+      const data = await fetchTrabajadores();
+      todos = data || [];
+      badge.textContent = `${todos.length} trabajadores`;
+      renderPuntos();
+      renderGrupos();
+      renderizar('');
+    } catch (e) {
+      mostrarEstado('❌', 'Error de conexión',
+        'Asegúrate de tener internet e intenta de nuevo.', true);
+      badge.textContent = 'Sin conexión';
+    }
+  }
+
+  inputBusc.addEventListener('input', () => {
+    btnLimpiar.style.display = inputBusc.value ? 'flex' : 'none';
+    renderizar(inputBusc.value);
+  });
+  btnLimpiar.addEventListener('click', () => {
+    inputBusc.value = '';
+    btnLimpiar.style.display = 'none';
+    renderizar('');
+    inputBusc.focus();
+  });
+
+  cargar();
+</script>
+</body>
+</html>

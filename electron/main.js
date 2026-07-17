@@ -1,4 +1,5 @@
-const { app, BrowserWindow, shell } = require('electron');
+const { app, BrowserWindow, shell, ipcMain } = require('electron');
+const { spawn } = require('child_process');
 const path = require('path');
 const http = require('http');
 const fs = require('fs');
@@ -99,6 +100,8 @@ function startServer(port) {
 
 // ─── Ventana principal ────────────────────────────────────────────────────────
 function createWindow(port) {
+  const isDev = !app.isPackaged;
+
   mainWindow = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -110,27 +113,30 @@ function createWindow(port) {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       nodeIntegration: false,
+      sandbox: false,  // necesario para que preload tenga acceso a ipcRenderer
     },
-    show: false, // Ocultar hasta que esté listo
+    show: false,
     backgroundColor: '#0f172a',
   });
 
   mainWindow.loadURL(`http://127.0.0.1:${port}`);
 
-  // Mostrar ventana cuando el contenido esté listo
+  // En modo desarrollo, abrir DevTools para inspeccionar errores
+  if (isDev) {
+    mainWindow.webContents.openDevTools({ mode: 'detach' });
+  }
+
   mainWindow.once('ready-to-show', () => {
     mainWindow.show();
     mainWindow.maximize();
   });
 
-  // Abrir links externos en el navegador del sistema, no en Electron
   mainWindow.webContents.setWindowOpenHandler(({ url: openUrl }) => {
     if (openUrl.startsWith('http://127.0.0.1')) return { action: 'allow' };
     shell.openExternal(openUrl);
     return { action: 'deny' };
   });
 
-  // Quitar menú nativo
   mainWindow.setMenuBarVisibility(false);
 
   mainWindow.on('closed', () => {

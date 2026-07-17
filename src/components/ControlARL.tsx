@@ -366,15 +366,18 @@ const ControlARL: React.FC = () => {
   const [filtroEstado, setFiltroEstado] = useState<'todos' | 'activos' | 'retirados'>('todos');
   const [fechaMasiva, setFechaMasiva] = useState(getLocalYYYYMMDD());
   
-  // Estado para arrastrar la barra
-  const [posBarra, setPosBarra] = useState({ x: 0, y: 0 });
-  const [arrastrando, setArrastrando] = useState(false);
+
 
   const currentMonth = new Date().getMonth() + 1;
   const currentYear = new Date().getFullYear();
   const [mesACalcular, setMesACalcular] = useState(currentMonth);
   const [yearACalcular, setYearACalcular] = useState(currentYear);
+
+  // Estado para arrastrar la barra
+  const [posBarra, setPosBarra] = useState({ x: 0, y: 0 });
+  const [arrastrando, setArrastrando] = useState(false);
   
+
   // --- LÓGICA DE CONTADOR EN TIEMPO REAL ---
   const periodosVisuales = React.useMemo(() => {
     if (!personaSeleccionada) return [];
@@ -791,6 +794,7 @@ const ControlARL: React.FC = () => {
           >
             <CheckCircle size={16} /> Activar Nuevos
           </button>
+
           <button 
             onClick={reiniciarTodoARL}
             disabled={procesando}
@@ -1166,6 +1170,9 @@ const ControlARL: React.FC = () => {
           </div>
         </ModalUI>
       )}
+
+
+
     </div>
   );
 };

@@ -429,6 +429,7 @@ export const LiquidacionPersonal: React.FC = () => {
       { width: 26 }, // Parqueadero
       { width: 16 }, // Banco
       { width: 22 }, // Cuenta
+      { width: 14 }, // Valor Turno
       { width: 9  }, // Turnos
       { width: 9  }, // Horas
       { width: 14 }, // Bono
@@ -441,7 +442,7 @@ export const LiquidacionPersonal: React.FC = () => {
     ];
 
     // Título
-    ws.mergeCells('A1:N1');
+    ws.mergeCells('A1:O1');
     const titleCell = ws.getCell('A1');
     titleCell.value = `INFORME DE LIQUIDACIONES — ${periodo.toUpperCase()}`;
     titleCell.font = { bold: true, size: 14, color: { argb: 'FFFFFFFF' } };
@@ -449,12 +450,12 @@ export const LiquidacionPersonal: React.FC = () => {
     titleCell.alignment = { horizontal: 'center', vertical: 'middle' };
     ws.getRow(1).height = 32;
 
-    ws.mergeCells('A2:N2');
+    ws.mergeCells('A2:O2');
     ws.getRow(2).height = 6;
     ws.getCell('A2').fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF059669' } };
 
     // Encabezados
-    const headers = ['Nombre', 'Cédula', 'Parqueadero', 'Banco', 'Cuenta', 'Turnos', 'Horas', 'Bono', 'Total Bruto', 'Aportes', 'ARL', 'Neto', 'Estado', 'Fecha'];
+    const headers = ['Nombre', 'Cédula', 'Parqueadero', 'Banco', 'Cuenta', 'Val. Turno', 'Turnos', 'Horas', 'Bono', 'Total Bruto', 'Aportes', 'ARL', 'Neto', 'Estado', 'Fecha'];
     const headerRow = ws.addRow(headers);
 
     headerRow.eachCell(cell => {
@@ -476,6 +477,7 @@ export const LiquidacionPersonal: React.FC = () => {
         item.persona.cargo,
         item.persona.formaPago,
         item.persona.numeroCuenta || '',
+        item.persona.valorTurno || 0,
         item.diasTurno,
         item.horasAdicionales,
         item.bono,
@@ -500,19 +502,19 @@ export const LiquidacionPersonal: React.FC = () => {
           right: { style: 'thin', color: { argb: 'FFD1FAE5' } },
         };
 
-        // money: 8=Bono, 9=Bruto, 10=Aportes, 11=ARL, 12=Neto
-        if ([8, 9, 10, 11, 12].includes(colNum)) {
+        // money: 6=Valor Turno, 9=Bono, 10=Bruto, 11=Aportes, 12=ARL, 13=Neto
+        if ([6, 9, 10, 11, 12, 13].includes(colNum)) {
           cell.numFmt = moneyFmt;
           cell.alignment = { horizontal: 'right' };
         }
 
-        // center: 6=Turnos, 7=Horas
-        if ([6, 7].includes(colNum)) {
+        // center: 7=Turnos, 8=Horas
+        if ([7, 8].includes(colNum)) {
           cell.alignment = { horizontal: 'center' };
         }
 
-        // Estado col 13
-        if (colNum === 13) {
+        // Estado col 14
+        if (colNum === 14) {
           cell.font = {
             bold: true,
             size: 9,
@@ -534,7 +536,7 @@ export const LiquidacionPersonal: React.FC = () => {
 
     // Totales
     const totRow = ws.addRow([
-      'TOTALES', '', '', '', '',
+      'TOTALES', '', '', '', '', '',
       totalTurnos,
       totalHoras,
       totalBono,
@@ -550,12 +552,12 @@ export const LiquidacionPersonal: React.FC = () => {
       cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF064E3B' } };
       cell.border = { top: { style: 'medium', color: { argb: 'FF10B981' } } };
 
-      if ([8, 9, 10, 11, 12].includes(colNum)) {
+      if ([6, 9, 10, 11, 12, 13].includes(colNum)) {
         cell.numFmt = moneyFmt;
         cell.alignment = { horizontal: 'right' };
       }
 
-      if ([6, 7].includes(colNum)) {
+      if ([7, 8].includes(colNum)) {
         cell.alignment = { horizontal: 'center' };
       }
     });
@@ -567,12 +569,12 @@ export const LiquidacionPersonal: React.FC = () => {
 
     const resRow = ws.addRow([
       `Total Pagado: $${totalPagado.toLocaleString('es-CO')}`,
-      '', '', '', '', '',
+      '', '', '', '', '', '',
       `Total Pendiente: $${totalPendiente.toLocaleString('es-CO')}`
     ]);
 
     resRow.getCell(1).font = { bold: true, color: { argb: 'FF065F46' }, size: 10 };
-    resRow.getCell(7).font = { bold: true, color: { argb: 'FF92400E' }, size: 10 };
+    resRow.getCell(8).font = { bold: true, color: { argb: 'FF92400E' }, size: 10 };
 
     // Descargar
     const buffer = await wb.xlsx.writeBuffer();
@@ -1954,7 +1956,7 @@ export const LiquidacionPersonal: React.FC = () => {
               <table className="w-full text-sm">
                 <thead>
                   <tr className={`border-b ${modoClaro ? "border-gray-200" : "border-slate-800"}`}>
-                    {['Trabajador','Cédula','Parqueadero','Banco','Turnos','Horas','Bono','Bruto','Aportes','ARL','Neto','Fecha','Estado'].map(h => (
+                    {['Trabajador','Cédula','Parqueadero','Banco','Val. Turno','Turnos','Horas','Bono','Bruto','Aportes','ARL','Neto','Fecha','Estado'].map(h => (
                       <th key={h} className={`px-4 py-3.5 text-left text-[9px] font-black uppercase tracking-widest whitespace-nowrap ${modoClaro ? "text-slate-500" : "text-slate-600"}`}>{h}</th>
                     ))}
                     <th className={`px-4 py-3.5 text-left text-[9px] font-black uppercase tracking-widest sticky right-0 z-10 ${modoClaro ? "text-slate-500 bg-white shadow-[-8px_0_12px_-4px_rgba(0,0,0,0.05)]" : "text-slate-600 bg-slate-900 shadow-[-8px_0_12px_-4px_rgba(0,0,0,0.4)]"}`}>Acciones</th>
@@ -1974,6 +1976,7 @@ export const LiquidacionPersonal: React.FC = () => {
                       <td className="px-4 py-3.5 text-slate-500 font-mono text-xs">{item.persona.cedula || '—'}</td>
                       <td className="px-4 py-3.5"><span className="text-[9px] font-bold text-teal-300 bg-teal-500/10 px-2 py-0.5 rounded-full border border-teal-500/20 whitespace-nowrap">{item.persona.cargo}</span></td>
                       <td className="px-4 py-3.5 text-slate-400">{item.persona.formaPago}</td>
+                      <td className="px-4 py-3.5 font-mono text-emerald-400 text-xs">{fmt(item.persona.valorTurno || 0)}</td>
                       <td className="px-4 py-3.5 text-center"><span className="bg-yellow-500/10 text-yellow-400 font-bold px-2 py-0.5 rounded-lg text-xs">{item.form.diasTurno}</span></td>
                       <td className="px-4 py-3.5 text-center"><span className="bg-blue-500/10 text-blue-400 font-bold px-2 py-0.5 rounded-lg text-xs">{item.form.horasAdicionales}</span></td>
                       <td className="px-4 py-3.5 text-center">
@@ -2153,7 +2156,7 @@ export const LiquidacionPersonal: React.FC = () => {
                 </tbody>
                 <tfoot>
                   <tr className={`border-t-2 ${modoClaro ? "bg-gray-50 border-gray-200" : "bg-slate-800/60 border-slate-700"}`}>
-                    <td colSpan={4} className={`px-4 py-4 font-black text-xs uppercase tracking-widest ${modoClaro ? "text-slate-700" : "text-white"}`}>TOTALES</td>
+                    <td colSpan={5} className={`px-4 py-4 font-black text-xs uppercase tracking-widest ${modoClaro ? "text-slate-700" : "text-white"}`}>TOTALES</td>
                     <td className="px-4 py-4 text-center"><span className="bg-yellow-500/20 text-yellow-300 font-black px-2 py-0.5 rounded-lg text-xs">{totalTurnos}</span></td>
                     <td className="px-4 py-4 text-center"><span className="bg-blue-500/20 text-blue-300 font-black px-2 py-0.5 rounded-lg text-xs">{totalHoras}</span></td>
                     <td className="px-4 py-4 text-center"><span className="bg-purple-500/20 text-purple-300 font-black px-2 py-0.5 rounded-lg text-xs">{fmt(historialActivo.reduce((acc, i) => acc + (i.form.tieneBono ? i.form.valorBono : 0), 0))}</span></td>

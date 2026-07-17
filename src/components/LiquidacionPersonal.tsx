@@ -468,25 +468,30 @@ export const LiquidacionPersonal: React.FC = () => {
     headerRow.height = 22;
 
     // Filas de datos (YA AGRUPADAS)
+    // Fila 1 = título, Fila 2 = barra de color, Fila 3 = encabezados → datos inician en fila 4
     const moneyFmt = '#,##0';
+    const DATA_START_ROW = 4;
+    let currentDataRow = DATA_START_ROW;
 
     historialAgrupado.forEach((item, idx) => {
+      const rn = currentDataRow; // número de fila actual en Excel
       const row = ws.addRow([
-        item.persona.nombre,
-        item.persona.cedula || '',
-        item.persona.cargo,
-        item.persona.formaPago,
-        item.persona.numeroCuenta || '',
-        item.persona.valorTurno || 0,
-        item.diasTurno,
-        item.horasAdicionales,
-        item.bono,
-        item.totalBruto,
-        item.descuentoPrestamo,
-        item.descuentoSeguridad,
-        item.neto,
-        item.estado,
-        item.fecha,
+        item.persona.nombre,                          // A - Nombre
+        item.persona.cedula || '',                    // B - Cédula
+        item.persona.cargo,                           // C - Parqueadero
+        item.persona.formaPago,                       // D - Banco
+        item.persona.numeroCuenta || '',              // E - Cuenta
+        item.persona.valorTurno || 0,                 // F - Val. Turno
+        item.diasTurno,                               // G - Turnos
+        item.horasAdicionales,                        // H - Horas
+        item.bono,                                    // I - Bono
+        item.totalBruto,                              // J - Bruto (valor calculado)
+        item.descuentoPrestamo,                       // K - Aportes
+        item.descuentoSeguridad,                      // L - ARL
+        // M - Neto: fórmula Bruto - Aportes - ARL
+        { formula: `=J${rn}-K${rn}-L${rn}`, result: item.neto },
+        item.estado,                                  // N - Estado
+        item.fecha,                                   // O - Fecha
       ]);
 
       const isEven = idx % 2 === 0;
@@ -502,7 +507,7 @@ export const LiquidacionPersonal: React.FC = () => {
           right: { style: 'thin', color: { argb: 'FFD1FAE5' } },
         };
 
-        // money: 6=Valor Turno, 9=Bono, 10=Bruto, 11=Aportes, 12=ARL, 13=Neto
+        // money: 6=Val.Turno, 9=Bono, 10=Bruto, 11=Aportes, 12=ARL, 13=Neto
         if ([6, 9, 10, 11, 12, 13].includes(colNum)) {
           cell.numFmt = moneyFmt;
           cell.alignment = { horizontal: 'right' };
@@ -513,37 +518,42 @@ export const LiquidacionPersonal: React.FC = () => {
           cell.alignment = { horizontal: 'center' };
         }
 
-        // Estado col 14
+        // Estado col 14 → color según estado
         if (colNum === 14) {
           cell.font = {
-            bold: true,
-            size: 9,
+            bold: true, size: 9,
             color: { argb: item.estado === 'Pagado' ? 'FF065F46' : 'FF92400E' }
           };
-
           cell.fill = {
-            type: 'pattern',
-            pattern: 'solid',
+            type: 'pattern', pattern: 'solid',
             fgColor: { argb: item.estado === 'Pagado' ? 'FFD1FAE5' : 'FFFEF3C7' }
           };
-
           cell.alignment = { horizontal: 'center' };
         }
       });
 
       row.height = 18;
+      currentDataRow++;
     });
 
-    // Totales
+    // Fila de TOTALES con fórmulas SUM
+    const lastDataRow = currentDataRow - 1;
     const totRow = ws.addRow([
       'TOTALES', '', '', '', '', '',
-      totalTurnos,
-      totalHoras,
-      totalBono,
-      totalBruto,
-      totalAportes,
-      totalArl,
-      totalNeto,
+      // G - Turnos totales
+      { formula: `=SUM(G${DATA_START_ROW}:G${lastDataRow})`, result: totalTurnos },
+      // H - Horas totales
+      { formula: `=SUM(H${DATA_START_ROW}:H${lastDataRow})`, result: totalHoras },
+      // I - Bono total
+      { formula: `=SUM(I${DATA_START_ROW}:I${lastDataRow})`, result: totalBono },
+      // J - Bruto total
+      { formula: `=SUM(J${DATA_START_ROW}:J${lastDataRow})`, result: totalBruto },
+      // K - Aportes totales
+      { formula: `=SUM(K${DATA_START_ROW}:K${lastDataRow})`, result: totalAportes },
+      // L - ARL total
+      { formula: `=SUM(L${DATA_START_ROW}:L${lastDataRow})`, result: totalArl },
+      // M - Neto total (suma de fórmulas de neto)
+      { formula: `=SUM(M${DATA_START_ROW}:M${lastDataRow})`, result: totalNeto },
       '', ''
     ]);
 
@@ -556,7 +566,6 @@ export const LiquidacionPersonal: React.FC = () => {
         cell.numFmt = moneyFmt;
         cell.alignment = { horizontal: 'right' };
       }
-
       if ([7, 8].includes(colNum)) {
         cell.alignment = { horizontal: 'center' };
       }
@@ -564,17 +573,29 @@ export const LiquidacionPersonal: React.FC = () => {
 
     totRow.height = 22;
 
-    // Resumen final
+    // Fila vacía de separación
     ws.addRow([]);
+    const totalsRow = lastDataRow + 2; // fila de TOTALES en el sheet
 
+    // Resumen final con fórmulas SUMIF de pagado y pendiente
     const resRow = ws.addRow([
-      `Total Pagado: $${totalPagado.toLocaleString('es-CO')}`,
-      '', '', '', '', '', '',
-      `Total Pendiente: $${totalPendiente.toLocaleString('es-CO')}`
+      'Total Pagado →', '', '', '', '', '', '',
+      // SUMIF: sumar M donde N = "Pagado"
+      { formula: `=SUMIF(N${DATA_START_ROW}:N${lastDataRow},"Pagado",M${DATA_START_ROW}:M${lastDataRow})`, result: totalPagado },
+      '', '', '', '', '', '', ''
     ]);
-
     resRow.getCell(1).font = { bold: true, color: { argb: 'FF065F46' }, size: 10 };
-    resRow.getCell(8).font = { bold: true, color: { argb: 'FF92400E' }, size: 10 };
+    resRow.getCell(8).font = { bold: true, color: { argb: 'FF065F46' }, size: 10 };
+    resRow.getCell(8).numFmt = moneyFmt;
+
+    const resRow2 = ws.addRow([
+      'Total Pendiente →', '', '', '', '', '', '',
+      { formula: `=SUMIF(N${DATA_START_ROW}:N${lastDataRow},"Pendiente",M${DATA_START_ROW}:M${lastDataRow})`, result: totalPendiente },
+      '', '', '', '', '', '', ''
+    ]);
+    resRow2.getCell(1).font = { bold: true, color: { argb: 'FF92400E' }, size: 10 };
+    resRow2.getCell(8).font = { bold: true, color: { argb: 'FF92400E' }, size: 10 };
+    resRow2.getCell(8).numFmt = moneyFmt;
 
     // Descargar
     const buffer = await wb.xlsx.writeBuffer();
@@ -745,6 +766,9 @@ export const LiquidacionPersonal: React.FC = () => {
       headerRow.height = 20;
 
       let totalNeto = 0;
+      const BANK_DATA_START = 4; // fila 1=título, 2=barra, 3=headers → datos desde fila 4
+      let bankCurrentRow = BANK_DATA_START;
+
       Array.from(agrupadoMap.values()).forEach(({ neto, item }, idx) => {
         totalNeto += neto;
         const row = ws.addRow([
@@ -753,7 +777,7 @@ export const LiquidacionPersonal: React.FC = () => {
           item.persona.cargo,
           item.persona.numeroCuenta || '',
           banco,
-          neto,
+          neto,  // F - Neto (valor base)
         ]);
         const bgColor = idx % 2 === 0 ? 'FFF0FDF4' : 'FFFFFFFF';
         row.eachCell((cell, colNum) => {
@@ -763,9 +787,14 @@ export const LiquidacionPersonal: React.FC = () => {
           if (colNum === 6) { cell.numFmt = '#,##0'; cell.alignment = { horizontal: 'right' }; }
         });
         row.height = 18;
+        bankCurrentRow++;
       });
 
-      const totRow = ws.addRow(['TOTAL', '', '', '', '', totalNeto]);
+      const bankLastDataRow = bankCurrentRow - 1;
+      const totRow = ws.addRow(['TOTAL', '', '', '', '',
+        // F - Total con fórmula SUM
+        { formula: `=SUM(F${BANK_DATA_START}:F${bankLastDataRow})`, result: totalNeto }
+      ]);
       totRow.eachCell((cell, colNum) => {
         cell.font = { bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
         cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF064E3B' } };

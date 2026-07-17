@@ -366,7 +366,7 @@ export default function AdminPage() {
                 </div>
               </div>
 
-              <div className="overflow-x-auto">
+              <div className="overflow-x-auto overflow-y-auto" style={{ maxHeight: '60vh' }}>
                 {loading ? (
                   <div className="py-16 text-center">
                     <div className="w-10 h-10 border-4 border-slate-100 border-t-emerald-500 rounded-full animate-spin mx-auto mb-3" />
@@ -379,10 +379,10 @@ export default function AdminPage() {
                   </div>
                 ) : (
                   <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b border-gray-100 bg-gray-50/50">
+                    <thead className="sticky top-0 z-10">
+                      <tr className="border-b border-gray-100 bg-gray-50">
                         {['Trabajador', 'Cargo', 'Turno / Hora', 'Pago', 'Acciones'].map(h => (
-                          <th key={h} className="px-5 py-3.5 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap">{h}</th>
+                          <th key={h} className="px-5 py-3.5 text-left text-[9px] font-black text-slate-400 uppercase tracking-widest whitespace-nowrap bg-gray-50 shadow-[0_2px_6px_rgba(0,0,0,0.06)]">{h}</th>
                         ))}
                       </tr>
                     </thead>

@@ -788,11 +788,26 @@ export const LiquidacionPersonal: React.FC = () => {
   const [filtroBanco, setFiltroBanco] = useState('');
   const [mostrarPreviewDavivienda, setMostrarPreviewDavivienda] = useState(false);
   const tablaRef = useRef<HTMLDivElement>(null);
+  const scrollableTableRef = useRef<HTMLDivElement>(null);
+  const [mostrarScrollTop, setMostrarScrollTop] = useState(false);
+  const [scrollPct, setScrollPct] = useState(0);
   const [editandoIndex, setEditandoIndex] = useState<number | null>(null);
   const [formEditar, setFormEditar] = useState<FormLiquidacion | null>(null);
   const [personaEditar, setPersonaEditar] = useState<Persona | null>(null);
 
   const editRowRef = useRef<HTMLTableRowElement>(null);
+
+  const handleTablaScroll = () => {
+    const el = scrollableTableRef.current;
+    if (!el) return;
+    setMostrarScrollTop(el.scrollTop > 120);
+    const maxH = el.scrollHeight - el.clientHeight;
+    setScrollPct(maxH > 0 ? Math.round((el.scrollTop / maxH) * 100) : 0);
+  };
+
+  const irArribaTabla = () => {
+    scrollableTableRef.current?.scrollTo({ top: 0, behavior: 'smooth' });
+  };
   const abrirEditar = (index: number) => {
     setEditandoIndex(index);
     setFormEditar({ ...historialActivo[index].form });
@@ -1952,14 +1967,51 @@ export const LiquidacionPersonal: React.FC = () => {
                 </select>
               </div>
             </div>
-            <div className="overflow-x-auto">
+            {/* Barra de progreso scroll horizontal */}
+            <div className={`h-0.5 relative ${modoClaro ? 'bg-gray-100' : 'bg-slate-800'}`}>
+              <div
+                className="absolute left-0 top-0 h-full bg-emerald-500 transition-all duration-150 rounded-full"
+                style={{ width: `${scrollPct}%` }}
+              />
+            </div>
+
+            {/* Contenedor con scroll vertical + horizontal y posición relativa para el botón flotante */}
+            <div
+              ref={scrollableTableRef}
+              onScroll={handleTablaScroll}
+              className="overflow-x-auto overflow-y-auto relative"
+              style={{ maxHeight: '65vh' }}
+            >
+              {/* Botón flotante «Ir arriba» */}
+              {mostrarScrollTop && (
+                <button
+                  onClick={irArribaTabla}
+                  title="Volver al inicio de la tabla"
+                  className={`sticky bottom-4 left-[calc(100%-72px)] z-50 flex items-center gap-1.5 px-3 py-2 rounded-xl text-[10px] font-black uppercase tracking-widest shadow-lg transition-all animate-in fade-in slide-in-from-bottom-2 duration-200 ${
+                    modoClaro
+                      ? 'bg-emerald-600 text-white shadow-emerald-200'
+                      : 'bg-emerald-500 text-white shadow-emerald-900/40'
+                  }`}
+                >
+                  ↑ Subir
+                </button>
+              )}
+
               <table className="w-full text-sm">
                 <thead>
                   <tr className={`border-b ${modoClaro ? "border-gray-200" : "border-slate-800"}`}>
                     {['Trabajador','Cédula','Parqueadero','Banco','Val. Turno','Turnos','Horas','Bono','Bruto','Aportes','ARL','Neto','Fecha','Estado'].map(h => (
-                      <th key={h} className={`px-4 py-3.5 text-left text-[9px] font-black uppercase tracking-widest whitespace-nowrap ${modoClaro ? "text-slate-500" : "text-slate-600"}`}>{h}</th>
+                      <th key={h} className={`px-4 py-3.5 text-left text-[9px] font-black uppercase tracking-widest whitespace-nowrap sticky top-0 z-20 ${
+                        modoClaro
+                          ? 'text-slate-500 bg-white border-b border-gray-200 shadow-sm'
+                          : 'text-slate-400 bg-slate-900 border-b border-slate-700 shadow-[0_2px_8px_rgba(0,0,0,0.4)]'
+                      }`}>{h}</th>
                     ))}
-                    <th className={`px-4 py-3.5 text-left text-[9px] font-black uppercase tracking-widest sticky right-0 z-10 ${modoClaro ? "text-slate-500 bg-white shadow-[-8px_0_12px_-4px_rgba(0,0,0,0.05)]" : "text-slate-600 bg-slate-900 shadow-[-8px_0_12px_-4px_rgba(0,0,0,0.4)]"}`}>Acciones</th>
+                    <th className={`px-4 py-3.5 text-left text-[9px] font-black uppercase tracking-widest sticky top-0 right-0 z-30 ${
+                      modoClaro
+                        ? 'text-slate-500 bg-white border-b border-gray-200 shadow-[-8px_0_12px_-4px_rgba(0,0,0,0.05)]'
+                        : 'text-slate-400 bg-slate-900 border-b border-slate-700 shadow-[-8px_0_12px_-4px_rgba(0,0,0,0.5)]'
+                    }`}>Acciones</th>
                   </tr>
                 </thead>
                 <tbody>
@@ -2168,7 +2220,7 @@ export const LiquidacionPersonal: React.FC = () => {
                   </tr>
                 </tfoot>
               </table>
-            </div>
+            </div>{/* fin scroll container */}
           </div>
         )}
       </div>

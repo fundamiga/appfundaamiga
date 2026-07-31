@@ -851,6 +851,23 @@ export const LiquidacionPersonal: React.FC = () => {
     const item = historialActivo[editandoIndex];
     const r = calcular(personaEditar, formEditar);
     const updated = { ...item, persona: personaEditar, form: formEditar, resultado: r } as any;
+    
+    if (modoInforme === 'general' && (item as any)._id) {
+      const { error } = await supabase
+        .from('historial_liquidaciones')
+        .update({
+          persona: personaEditar,
+          form: formEditar,
+          resultado: r,
+        })
+        .eq('id', (item as any)._id);
+      if (error) {
+        console.error('Error al actualizar liquidación en Supabase:', error);
+        alert('Error al guardar la edición en la base de datos: ' + error.message);
+        return;
+      }
+    }
+
     const n = [...historialActivo];
     n[editandoIndex] = updated;
     setHistorialActivo(n);
@@ -2044,70 +2061,72 @@ export const LiquidacionPersonal: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody>
-                  {historialActivo.filter(item => {
-                    const matchNombre = !filtroHistorial || item.persona.nombre.toLowerCase().includes(filtroHistorial.toLowerCase()) || item.persona.cedula.includes(filtroHistorial);
-                    const matchCargo = !filtroCargo || item.persona.cargo === filtroCargo;
-                    const matchQuincena = !filtroQuincena || (item as any).quincena === filtroQuincena;
-                    const matchBanco = !filtroBanco || item.persona.formaPago === filtroBanco;
-                    return matchNombre && matchCargo && matchQuincena && matchBanco;
-                  }).flatMap((item, i) => {
-                    const rows = [];
-                    rows.push(<tr key={`row-${i}`} className={`border-b transition-colors ${modoClaro ? "border-gray-100 hover:bg-gray-50" : "border-slate-800/60 hover:bg-slate-800/30"}`}>
-                      <td className={`px-4 py-3.5 font-bold whitespace-nowrap ${modoClaro ? "text-slate-800" : "text-white"}`}>{item.persona.nombre}</td>
-                      <td className="px-4 py-3.5 text-slate-500 font-mono text-xs">{item.persona.cedula || '—'}</td>
-                      <td className="px-4 py-3.5"><span className="text-[9px] font-bold text-teal-300 bg-teal-500/10 px-2 py-0.5 rounded-full border border-teal-500/20 whitespace-nowrap">{item.persona.cargo}</span></td>
-                      <td className="px-4 py-3.5 text-slate-400">{item.persona.formaPago}</td>
-                      <td className="px-4 py-3.5 font-mono text-emerald-400 text-xs">{fmt(item.persona.valorTurno || 0)}</td>
-                      <td className="px-4 py-3.5 text-center"><span className="bg-yellow-500/10 text-yellow-400 font-bold px-2 py-0.5 rounded-lg text-xs">{item.form.diasTurno}</span></td>
-                      <td className="px-4 py-3.5 text-center"><span className="bg-blue-500/10 text-blue-400 font-bold px-2 py-0.5 rounded-lg text-xs">{item.form.horasAdicionales}</span></td>
-                      <td className="px-4 py-3.5 text-center">
-                        {item.form.tieneBono && item.form.valorBono > 0 ? (
-                          <div className="flex flex-col items-center gap-0.5">
-                            <span className="bg-purple-500/10 text-purple-400 font-bold px-2 py-0.5 rounded-lg text-xs">+{fmt(item.form.valorBono)}</span>
-                            {item.form.descripcionBono && <span className="text-[9px] text-purple-500/70 font-semibold">{item.form.descripcionBono}</span>}
+                  {historialActivo
+                    .map((item, originalIndex) => ({ item, originalIndex }))
+                    .filter(({ item }) => {
+                      const matchNombre = !filtroHistorial || item.persona.nombre.toLowerCase().includes(filtroHistorial.toLowerCase()) || item.persona.cedula.includes(filtroHistorial);
+                      const matchCargo = !filtroCargo || item.persona.cargo === filtroCargo;
+                      const matchQuincena = !filtroQuincena || (item as any).quincena === filtroQuincena;
+                      const matchBanco = !filtroBanco || item.persona.formaPago === filtroBanco;
+                      return matchNombre && matchCargo && matchQuincena && matchBanco;
+                    }).flatMap(({ item, originalIndex }) => {
+                      const rows = [];
+                      rows.push(<tr key={`row-${originalIndex}`} className={`border-b transition-colors ${modoClaro ? "border-gray-100 hover:bg-gray-50" : "border-slate-800/60 hover:bg-slate-800/30"}`}>
+                        <td className={`px-4 py-3.5 font-bold whitespace-nowrap ${modoClaro ? "text-slate-800" : "text-white"}`}>{item.persona.nombre}</td>
+                        <td className="px-4 py-3.5 text-slate-500 font-mono text-xs">{item.persona.cedula || '—'}</td>
+                        <td className="px-4 py-3.5"><span className="text-[9px] font-bold text-teal-300 bg-teal-500/10 px-2 py-0.5 rounded-full border border-teal-500/20 whitespace-nowrap">{item.persona.cargo}</span></td>
+                        <td className="px-4 py-3.5 text-slate-400">{item.persona.formaPago}</td>
+                        <td className="px-4 py-3.5 font-mono text-emerald-400 text-xs">{fmt(item.persona.valorTurno || 0)}</td>
+                        <td className="px-4 py-3.5 text-center"><span className="bg-yellow-500/10 text-yellow-400 font-bold px-2 py-0.5 rounded-lg text-xs">{item.form.diasTurno}</span></td>
+                        <td className="px-4 py-3.5 text-center"><span className="bg-blue-500/10 text-blue-400 font-bold px-2 py-0.5 rounded-lg text-xs">{item.form.horasAdicionales}</span></td>
+                        <td className="px-4 py-3.5 text-center">
+                          {item.form.tieneBono && item.form.valorBono > 0 ? (
+                            <div className="flex flex-col items-center gap-0.5">
+                              <span className="bg-purple-500/10 text-purple-400 font-bold px-2 py-0.5 rounded-lg text-xs">+{fmt(item.form.valorBono)}</span>
+                              {item.form.descripcionBono && <span className="text-[9px] text-purple-500/70 font-semibold">{item.form.descripcionBono}</span>}
+                            </div>
+                          ) : <span className="text-slate-700">—</span>}
+                        </td>
+                        <td className="px-4 py-3.5 text-slate-300 font-semibold">{fmt(item.resultado.totalBruto)}</td>
+                        <td className="px-4 py-3.5 text-orange-400 font-semibold">{item.resultado.descuentoPrestamo > 0 ? `−${fmt(item.resultado.descuentoPrestamo)}` : '—'}</td>
+                        <td className="px-4 py-3.5 text-blue-400 font-semibold">{item.resultado.descuentoSeguridad > 0 ? fmt(item.resultado.descuentoSeguridad) : '—'}</td>
+                        <td className="px-4 py-3.5 font-black text-emerald-400">{fmt(item.resultado.neto)}</td>
+                        <td className="px-4 py-3.5 text-slate-600 text-xs whitespace-nowrap">{item.fecha}</td>
+                        <td className="px-4 py-3.5">
+                          {item.estado === 'Pagado' ? (
+                            <span className="inline-flex items-center gap-1.5 bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded-full text-[10px] font-black">
+                              <CheckCircle size={10} />Pagado
+                            </span>
+                          ) : (
+                            <button onClick={() => cambiarEstado(originalIndex)} className="inline-flex items-center gap-1.5 bg-yellow-500/15 hover:bg-emerald-500/15 text-yellow-400 hover:text-emerald-400 border border-yellow-500/20 hover:border-emerald-500/20 px-2.5 py-1 rounded-full text-[10px] font-black transition-all">
+                              <Clock size={10} />Pendiente
+                            </button>
+                          )}
+                        </td>
+                        {/* Columna sticky de acciones */}
+                        <td className={`px-4 py-3.5 sticky right-0 z-10 ${modoClaro ? "bg-white shadow-[-8px_0_12px_-4px_rgba(0,0,0,0.05)]" : "bg-slate-900 shadow-[-8px_0_12px_-4px_rgba(0,0,0,0.4)]"}`}>
+                          <div className="flex items-center gap-1.5">
+                            <button
+                              onClick={() => abrirEditar(originalIndex)}
+                              className="p-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/25 text-amber-400 hover:text-amber-300 border border-amber-500/20 transition-all"
+                              title="Editar liquidación"
+                            >
+                              <Pencil size={12} />
+                            </button>
+                            <button
+                              onClick={() => eliminarFila(originalIndex)}
+                              className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/25 text-red-500 hover:text-red-300 border border-red-500/20 transition-all"
+                              title="Eliminar fila"
+                            >
+                              <Trash2 size={12} />
+                            </button>
                           </div>
-                        ) : <span className="text-slate-700">—</span>}
-                      </td>
-                      <td className="px-4 py-3.5 text-slate-300 font-semibold">{fmt(item.resultado.totalBruto)}</td>
-                      <td className="px-4 py-3.5 text-orange-400 font-semibold">{item.resultado.descuentoPrestamo > 0 ? `−${fmt(item.resultado.descuentoPrestamo)}` : '—'}</td>
-                      <td className="px-4 py-3.5 text-blue-400 font-semibold">{item.resultado.descuentoSeguridad > 0 ? fmt(item.resultado.descuentoSeguridad) : '—'}</td>
-                      <td className="px-4 py-3.5 font-black text-emerald-400">{fmt(item.resultado.neto)}</td>
-                      <td className="px-4 py-3.5 text-slate-600 text-xs whitespace-nowrap">{item.fecha}</td>
-                      <td className="px-4 py-3.5">
-                        {item.estado === 'Pagado' ? (
-                          <span className="inline-flex items-center gap-1.5 bg-emerald-500/15 text-emerald-400 border border-emerald-500/20 px-2.5 py-1 rounded-full text-[10px] font-black">
-                            <CheckCircle size={10} />Pagado
-                          </span>
-                        ) : (
-                          <button onClick={() => cambiarEstado(i)} className="inline-flex items-center gap-1.5 bg-yellow-500/15 hover:bg-emerald-500/15 text-yellow-400 hover:text-emerald-400 border border-yellow-500/20 hover:border-emerald-500/20 px-2.5 py-1 rounded-full text-[10px] font-black transition-all">
-                            <Clock size={10} />Pendiente
-                          </button>
-                        )}
-                      </td>
-                      {/* Columna sticky de acciones */}
-                      <td className={`px-4 py-3.5 sticky right-0 z-10 ${modoClaro ? "bg-white shadow-[-8px_0_12px_-4px_rgba(0,0,0,0.05)]" : "bg-slate-900 shadow-[-8px_0_12px_-4px_rgba(0,0,0,0.4)]"}`}>
-                        <div className="flex items-center gap-1.5">
-                          <button
-                            onClick={() => abrirEditar(i)}
-                            className="p-1.5 rounded-lg bg-amber-500/10 hover:bg-amber-500/25 text-amber-400 hover:text-amber-300 border border-amber-500/20 transition-all"
-                            title="Editar liquidación"
-                          >
-                            <Pencil size={12} />
-                          </button>
-                          <button
-                            onClick={() => eliminarFila(i)}
-                            className="p-1.5 rounded-lg bg-red-500/10 hover:bg-red-500/25 text-red-500 hover:text-red-300 border border-red-500/20 transition-all"
-                            title="Eliminar fila"
-                          >
-                            <Trash2 size={12} />
-                          </button>
-                        </div>
-                      </td>
-                    </tr>);
+                        </td>
+                      </tr>);
 
-                    if (editandoIndex === i && formEditar) {
-                      rows.push(
-                        <tr ref={editRowRef} key={`edit-${i}`} className="bg-slate-800/80 border-b border-amber-500/30">
+                      if (editandoIndex === originalIndex && formEditar) {
+                        rows.push(
+                          <tr ref={editRowRef} key={`edit-${originalIndex}`} className="bg-slate-800/80 border-b border-amber-500/30">
                           <td colSpan={14} className="px-6 py-5">
                             <p className="text-[10px] font-black text-amber-400 uppercase tracking-widest mb-4">Editando: {item.persona.nombre}</p>
 

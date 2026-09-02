@@ -883,7 +883,14 @@ export const LiquidacionPersonal: React.FC = () => {
 
   const eliminarFila = async (index: number) => {
     const item = historialActivo[index] as any;
-    if (modoInforme === 'general' && item._id) await supabase.from('historial_liquidaciones').delete().eq('id', item._id);
+    if (modoInforme === 'general' && item._id) {
+      const { error } = await supabase.from('historial_liquidaciones').delete().eq('id', item._id);
+      if (error) {
+        console.error('Error al eliminar de Supabase:', error);
+        alert('⚠️ No se pudo eliminar de la base de datos: ' + error.message);
+        return;
+      }
+    }
     await registrarCambio('ELIMINACIÓN', item.persona.nombre,
       `Liquidación eliminada — Neto: ${fmt(item.resultado.neto)}`,
       { neto: item.resultado.neto, fecha: item.fecha }, null
@@ -904,9 +911,10 @@ export const LiquidacionPersonal: React.FC = () => {
         const updated = { ...item, form: formReset, resultado: resultadoReset };
         
         if (modoInforme === 'general' && (item as any)._id) {
-          await supabase.from('historial_liquidaciones')
+          const { error } = await supabase.from('historial_liquidaciones')
             .update({ form: formReset, resultado: resultadoReset })
             .eq('id', (item as any)._id);
+          if (error) throw error;
         }
         
         return updated;
@@ -916,6 +924,7 @@ export const LiquidacionPersonal: React.FC = () => {
       await registrarCambio('REINICIO MASIVO', 'Todos', `Se reiniciaron los valores de ${nuevoHistorial.length} registros a cero.`, null, null);
     } catch (e: any) {
       setErrorMsg('Error al reiniciar valores: ' + e.message);
+      alert('⚠️ Error al reiniciar valores: ' + e.message);
     }
     setLoadingHistorial(false);
   };
@@ -948,9 +957,10 @@ export const LiquidacionPersonal: React.FC = () => {
         
         // Si estamos en modo general, actualizamos la base de datos
         if (modoInforme === 'general' && (item as any)._id) {
-          await supabase.from('historial_liquidaciones')
+          const { error } = await supabase.from('historial_liquidaciones')
             .update({ form: nuevoForm, resultado: nuevoResultado })
             .eq('id', (item as any)._id);
+          if (error) throw error;
         }
         
         return updated;
@@ -961,22 +971,44 @@ export const LiquidacionPersonal: React.FC = () => {
       alert(`${nuevoHistorial.length} liquidaciones sincronizadas correctamente con el módulo ARL.`);
     } catch (e: any) {
       setErrorMsg('Error al sincronizar ARL: ' + e.message);
+      alert('⚠️ Error al sincronizar ARL: ' + e.message);
     }
     setLoadingHistorial(false);
   };
 
   const marcarTodoPagado = async () => {
     if (!confirm('¿Marcar todas las liquidaciones como Pagado?')) return;
-    if (modoInforme === 'general') await supabase.from('historial_liquidaciones').update({ estado: 'Pagado' }).eq('estado', 'Pendiente');
+    if (modoInforme === 'general') {
+      const { error } = await supabase.from('historial_liquidaciones').update({ estado: 'Pagado' }).eq('estado', 'Pendiente');
+      if (error) {
+        console.error('Error al marcar todo pagado en Supabase:', error);
+        alert('⚠️ Error al actualizar estado en la base de datos: ' + error.message);
+        return;
+      }
+    }
     await registrarCambio('MARCAR PAGADO', 'Todos', `Se marcaron ${historialActivo.filter(i => i.estado === 'Pendiente').length} liquidaciones como Pagado`, null, null);
     setHistorialActivo(prev => prev.map(item => ({ ...item, estado: 'Pagado' as const })));
   };
 
   const borrarHistorial = async () => {
     if (!confirm("¿Seguro que quieres borrar todo el informe?")) return;
-    await registrarCambio('BORRADO INFORME', 'Todos', `Se borró el informe completo con ${historialActivo.length} registros`, { total: historialActivo.length }, null);
     if (modoInforme === 'general') {
-      await supabase.from('historial_liquidaciones').delete().neq('id', '');
+      const ids = historial.map((i: any) => i._id).filter(Boolean);
+      let error: any = null;
+      if (ids.length > 0) {
+        const res = await supabase.from('historial_liquidaciones').delete().in('id', ids);
+        error = res.error;
+      }
+      if (error || ids.length === 0) {
+        const res = await supabase.from('historial_liquidaciones').delete().not('id', 'is', null);
+        error = res.error;
+      }
+      if (error) {
+        console.error('Error borrando en Supabase:', error);
+        alert('⚠️ No se pudo borrar el informe de la base de datos: ' + error.message);
+        return;
+      }
+      await registrarCambio('BORRADO INFORME', 'Todos', `Se borró el informe completo con ${historialActivo.length} registros`, { total: historialActivo.length }, null);
       setHistorial([]);
     } else {
       localStorage.removeItem('historial_privado_fundamiga');
@@ -1143,7 +1175,14 @@ export const LiquidacionPersonal: React.FC = () => {
 
   const cambiarEstado = async (index: number) => {
     const item = historialActivo[index] as any;
-    if (modoInforme === 'general' && item._id) await supabase.from('historial_liquidaciones').update({ estado: 'Pagado' }).eq('id', item._id);
+    if (modoInforme === 'general' && item._id) {
+      const { error } = await supabase.from('historial_liquidaciones').update({ estado: 'Pagado' }).eq('id', item._id);
+      if (error) {
+        console.error('Error al actualizar estado:', error);
+        alert('⚠️ Error al actualizar estado en la base de datos: ' + error.message);
+        return;
+      }
+    }
     await registrarCambio('PAGO', item.persona.nombre, `Marcado como Pagado — Neto: ${fmt(item.resultado.neto)}`, { estado: 'Pendiente' }, { estado: 'Pagado' });
     const n = [...historialActivo]; n[index].estado = 'Pagado'; setHistorialActivo(n);
   };
@@ -1167,7 +1206,12 @@ export const LiquidacionPersonal: React.FC = () => {
     const fecha = new Date().toLocaleString('es-CO');
     const quincena = obtenerPeriodo();
     if (modoInforme === 'general') {
-      await supabase.from('historial_liquidaciones').insert({ id, persona: personaEditable, form, resultado: r, fecha, estado: 'Pendiente', quincena });
+      const { error } = await supabase.from('historial_liquidaciones').insert({ id, persona: personaEditable, form, resultado: r, fecha, estado: 'Pendiente', quincena });
+      if (error) {
+        console.error('Error guardando en Supabase:', error);
+        alert('⚠️ Error al guardar en la base de datos: ' + error.message);
+        return;
+      }
       await registrarCambio('NUEVO CÁLCULO', personaEditable.nombre, `Liquidación calculada — Neto: ${fmt(r.neto)} — ${quincena}`, null, { neto: r.neto, form });
       setHistorial(prev => [...prev, { persona: personaEditable, form, resultado: r, fecha, estado: 'Pendiente', _id: id } as any]);
     } else {
@@ -1627,32 +1671,36 @@ export const LiquidacionPersonal: React.FC = () => {
                       <p className="text-[10px] text-slate-600 mt-0.5">Edición manual para este cálculo</p>
                     </div>
                   </div>
-                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
                     <NumField label="Valor turno" value={personaEditable?.valorTurno || 0} onChange={v => setPersonaEditable(prev => prev ? { ...prev, valorTurno: v, valorHoraAdicional: v > 0 ? Math.round(v / 8) : prev.valorHoraAdicional } : prev)} prefix="$" />
                     <NumField label="Hora adicional" value={personaEditable?.valorHoraAdicional || 0} onChange={v => setPersonaEditable(prev => prev ? { ...prev, valorHoraAdicional: v } : prev)} prefix="$" />
                     <div className="group">
                       <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">Forma de Pago</label>
                       <select value={personaEditable?.formaPago || ''} onChange={e => {
                         const nuevoBanco = e.target.value;
-                        // Buscar la cuenta registrada para este trabajador con ese banco
                         const trabajadorActual = personasActivas.find(p => p.cedula === personaEditable?.cedula);
-                        // Solo actualiza la cuenta si el trabajador tiene ese banco registrado
                         const nuevaCuenta = trabajadorActual?.formaPago?.toLowerCase() === nuevoBanco.toLowerCase()
                           ? (trabajadorActual?.numeroCuenta || '')
-                          : '';
+                          : (personaEditable?.numeroCuenta || '');
                         setPersonaEditable(prev => prev ? { ...prev, formaPago: nuevoBanco, numeroCuenta: nuevaCuenta } : prev);
                       }}
                         className="w-full px-4 py-3.5 bg-slate-800/60 border border-slate-700 rounded-xl text-white font-bold text-sm focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all">
                         <option value="">Seleccionar banco</option>
                         {['Bancolombia','Nequi','Daviplata','Davivienda','BBVA','Banco de Bogotá','Banco Popular','AV Villas','Caja Social','Transferencia','Efectivo'].map(b => <option key={b} value={b}>{b}</option>)}
                       </select>
-                      {personaEditable?.numeroCuenta && (
-                        <p className="text-[9px] text-slate-500 font-mono mt-1">Cuenta: {personaEditable.numeroCuenta}</p>
-                      )}
-                      {personaEditable?.formaPago && personaEditable.formaPago !== 'Efectivo' && !personaEditable.numeroCuenta && (
-                        <p className="text-[9px] text-yellow-500 font-semibold mt-1">⚠ Sin cuenta registrada para {personaEditable.formaPago}</p>
-                      )}
                     </div>
+                    {personaEditable?.formaPago !== 'Efectivo' && (
+                      <div className="group">
+                        <label className="block text-[10px] font-black uppercase tracking-widest text-slate-400 mb-2">No. Cuenta / Celular</label>
+                        <input
+                          type="text"
+                          placeholder="Ej: 3001234567"
+                          value={personaEditable?.numeroCuenta || ''}
+                          onChange={e => setPersonaEditable(prev => prev ? { ...prev, numeroCuenta: e.target.value } : prev)}
+                          className="w-full px-4 py-3.5 bg-slate-800/60 border border-slate-700 rounded-xl text-white font-mono font-bold text-sm focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 outline-none transition-all"
+                        />
+                      </div>
+                    )}
                   </div>
                 </div>
 
@@ -2145,17 +2193,25 @@ export const LiquidacionPersonal: React.FC = () => {
                                   const nuevoBanco = e.target.value;
                                   const trabajadorActual = personasActivas.find(p => p.cedula === personaEditar?.cedula);
                                   const nuevaCuenta = trabajadorActual?.formaPago?.toLowerCase() === nuevoBanco.toLowerCase()
-                                    ? (trabajadorActual?.numeroCuenta || '') : '';
+                                    ? (trabajadorActual?.numeroCuenta || '') : (personaEditar?.numeroCuenta || '');
                                   setPersonaEditar(prev => prev ? {...prev, formaPago: nuevoBanco, numeroCuenta: nuevaCuenta} : prev);
                                 }}
                                   className="px-2 py-1.5 bg-slate-700 border border-slate-600 rounded-lg text-white text-xs font-bold outline-none focus:border-amber-400 cursor-pointer">
                                   {['Bancolombia','Nequi','Daviplata','Davivienda','BBVA','Banco de Bogotá','Banco Popular','AV Villas','Caja Social','Transferencia','Efectivo'].map(b => <option key={b} value={b} className="bg-slate-800">{b}</option>)}
                                 </select>
-                                {personaEditar?.numeroCuenta && <p className="text-[9px] text-slate-500 font-mono">{personaEditar.numeroCuenta}</p>}
-                                {personaEditar?.formaPago && personaEditar.formaPago !== 'Efectivo' && !personaEditar.numeroCuenta && (
-                                  <p className="text-[9px] text-yellow-500 font-semibold">⚠ Sin cuenta</p>
-                                )}
                               </div>
+                              {personaEditar?.formaPago !== 'Efectivo' && (
+                                <div className="flex flex-col gap-1">
+                                  <p className="text-[9px] text-slate-500 font-bold uppercase mb-1">No. Cuenta / Celular</p>
+                                  <input
+                                    type="text"
+                                    placeholder="Ej: 3001234567"
+                                    value={personaEditar?.numeroCuenta || ''}
+                                    onChange={e => setPersonaEditar(prev => prev ? { ...prev, numeroCuenta: e.target.value } : prev)}
+                                    className="w-36 px-2 py-1.5 bg-slate-700 border border-slate-600 rounded-lg text-white text-xs font-mono font-bold outline-none focus:border-amber-400"
+                                  />
+                                </div>
+                              )}
                             </div>
 
                             {/* Divisor */}

@@ -4,6 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Consulta de Personal – Fundamiga</title>
+
+  <!-- PWA -->
+  <link rel="manifest" href="./manifest.json" />
+  <meta name="theme-color" content="#059669" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+  <meta name="apple-mobile-web-app-title" content="Personal Fundamiga" />
+  <link rel="apple-touch-icon" href="./icon-512.png" />
+  <meta name="description" content="Consulta rápida de nombres y cédulas del personal de Fundamiga" />
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
@@ -478,6 +488,15 @@
   <div class="footer">Fundamiga · Consulta de Personal · Solo lectura</div>
 
 <script>
+  // ── Service Worker (PWA) ─────────────────────────────────────────────────
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js')
+        .then(reg => console.log('✅ SW registrado:', reg.scope))
+        .catch(err => console.warn('SW error:', err));
+    });
+  }
+
   // ── Supabase ─────────────────────────────────────────────────────────────
   const SUPA_URL = 'https://upgrsqatxeokoagcwbks.supabase.co';
   const SUPA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InVwZ3JzcWF0eGVva29hZ2N3YmtzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzQ3NTM0NzUsImV4cCI6MjA5MDMyOTQ3NX0.b87zEqrr-dznnsOwX58mKHlVcgLjYEJkTTJwaf5-KCQ';

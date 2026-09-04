@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Sparkles, X, Send, Bot, User, ChevronDown, Check, Copy, Calculator, Shield, Users, HelpCircle } from 'lucide-react';
-import { processAIChatMessage, ChatMessage, ChatAction } from '@/lib/aiChatService';
+import { Sparkles, X, Send, Bot, User, ChevronDown, Check, Copy, Calculator, Shield, Users, HelpCircle, RefreshCw, Zap } from 'lucide-react';
+import { processAIChatMessage, ChatMessage, ChatAction, executeUpdateTrabajador } from '@/lib/aiChatService';
 
 export default function AIChatWidget() {
   const [isOpen, setIsOpen] = useState(false);
@@ -88,6 +88,9 @@ export default function AIChatWidget() {
     }
   };
 
+  const [ejecutandoAccionId, setEjecutandoAccionId] = useState<string | null>(null);
+  const [accionesEjecutadas, setAccionesEjecutadas] = useState<string[]>([]);
+
   const handleExecuteAction = async (action: ChatAction, actIdx: number) => {
     if (action.tipo === 'COPIAR' && action.payload) {
       try {
@@ -105,6 +108,36 @@ export default function AIChatWidget() {
         const key = `${actIdx}-${action.payload}`;
         setCopiadoIdx(key);
         setTimeout(() => setCopiadoIdx(null), 2000);
+      }
+      return;
+    }
+
+    if (action.tipo === 'MODIFICAR_DATO' && action.payload) {
+      const actionKey = `${actIdx}-${action.payload.trabajadorId}-${action.payload.campo}`;
+      if (accionesEjecutadas.includes(actionKey) || ejecutandoAccionId === actionKey) return;
+
+      setEjecutandoAccionId(actionKey);
+      try {
+        const res = await executeUpdateTrabajador(action.payload);
+        setAccionesEjecutadas(prev => [...prev, actionKey]);
+
+        const confirmationMsg: ChatMessage = {
+          id: (Date.now() + 2).toString(),
+          sender: 'assistant',
+          text: res.message,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, confirmationMsg]);
+      } catch (err: any) {
+        const errorMsg: ChatMessage = {
+          id: (Date.now() + 2).toString(),
+          sender: 'assistant',
+          text: `❌ Error al intentar actualizar: ${err?.message || 'Error inesperado'}`,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, errorMsg]);
+      } finally {
+        setEjecutandoAccionId(null);
       }
     }
   };
@@ -234,6 +267,40 @@ export default function AIChatWidget() {
                     <div className="mt-3 pt-2.5 border-t border-slate-100 flex flex-col gap-1.5">
                       {msg.acciones.map((act, aIdx) => {
                         const isCopied = copiadoIdx === `${aIdx}-${act.payload}`;
+                        const actionKey = `${aIdx}-${act.payload?.trabajadorId}-${act.payload?.campo}`;
+                        const isModifying = ejecutandoAccionId === actionKey;
+                        const isModified = accionesEjecutadas.includes(actionKey);
+
+                        if (act.tipo === 'MODIFICAR_DATO') {
+                          return (
+                            <button
+                              key={aIdx}
+                              onClick={() => handleExecuteAction(act, aIdx)}
+                              disabled={isModifying || isModified}
+                              className={`w-full py-2 px-3 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-xs ${
+                                isModified
+                                  ? 'bg-emerald-600 text-white cursor-default'
+                                  : isModifying
+                                  ? 'bg-amber-100 text-amber-900 cursor-wait'
+                                  : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white active:scale-98 shadow-sm cursor-pointer'
+                              }`}
+                            >
+                              {isModified ? (
+                                <>
+                                  <Check size={14} /> ¡Modificación guardada con éxito!
+                                </>
+                              ) : isModifying ? (
+                                <>
+                                  <RefreshCw size={14} className="animate-spin" /> Guardando en Supabase...
+                                </>
+                              ) : (
+                                <>
+                                  <Zap size={14} className="fill-white" /> {act.label}
+                                </>
+                              )}
+                            </button>
+                          );
+                        }
 
                         return (
                           <button

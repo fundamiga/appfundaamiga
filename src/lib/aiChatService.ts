@@ -94,7 +94,13 @@ export async function processAIChatMessage(message: string): Promise<ChatRespons
 }
 
 async function processFundamigaQuery(query: string): Promise<ChatResponse> {
-  let q = query.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  let q = query
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[¨´`^~¿?¡!.,:;_"*()\[\]{}]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
 
   // Corrección inteligente de dedazos y variaciones ortográficas frecuentes
   q = q
@@ -609,7 +615,15 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
   }
 
   // ── 3. CONSULTAS DE SEGURIDAD SOCIAL / ARL ─────────────────────────────────
-  if (q.includes('arl') || q.includes('seguridad social') || q.includes('descuento arl') || q.includes('pila')) {
+  const esConsultaARL =
+    /\b(arl)\b/i.test(q) ||
+    /\b(pila)\b/i.test(q) ||
+    q.includes('seguridad social') ||
+    q.includes('descuento arl') ||
+    q.includes('control arl') ||
+    q.includes('modulo arl');
+
+  if (esConsultaARL) {
     // Si pregunta por valores de descuento ARL
     if (q.includes('cuanto es') || q.includes('descuento') || q.includes('tabla')) {
       return {
@@ -631,7 +645,11 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
   }
 
   // ── 4. CONSULTAS DE REMESAS ────────────────────────────────────────────────
-  if (q.includes('remesa') || q.includes('remesas')) {
+  const esConsultaRemesas =
+    /\b(remesa|remesas)\b/i.test(q) &&
+    (q.includes('personal') || q.includes('control') || q.includes('modulo') || q.includes('tabla') || q.includes('lista') || q.trim() === 'remesas' || q.trim() === 'remesa');
+
+  if (esConsultaRemesas) {
     const { data: trabajadoresRemesas } = await supabase
       .from('trabajadores')
       .select('nombre, cedula, valor_turno, numero_cuenta')
@@ -747,6 +765,42 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
     }
     const { data: resAnd } = await queryAnd.limit(5);
     let resultados = resAnd || [];
+
+    // Fallback: si no encontró todos los tokens juntos (ej: orden inverso o segundo nombre no registrado), buscar por token individual
+    if (resultados.length === 0 && tokens.length > 1) {
+      for (const t of tokens) {
+        const { data: resToken } = await supabase
+          .from('trabajadores')
+          .select('*')
+          .ilike('nombre', `%${t}%`)
+          .limit(5);
+        if (resToken && resToken.length > 0) {
+          resultados = resToken;
+          break;
+        }
+      }
+    }
+
+    // Fallback: buscar directamente en el historial de nómina
+    if (resultados.length === 0) {
+      const { data: hist } = await supabase.from('historial_liquidaciones').select('*');
+      const histMatches = (hist || []).filter(h => {
+        const nom = (h.persona?.nombre || '').toLowerCase();
+        return tokens.some(tk => nom.includes(tk));
+      });
+      if (histMatches.length > 0) {
+        resultados = histMatches.slice(0, 5).map(h => ({
+          id: h.id,
+          nombre: h.persona?.nombre || '',
+          cedula: h.persona?.cedula || '',
+          cargo: h.persona?.cargo || '',
+          valor_turno: h.persona?.valorTurno || 0,
+          valor_hora_adicional: h.persona?.valorHoraAdicional || 0,
+          forma_pago: h.persona?.formaPago || '',
+          numero_cuenta: h.persona?.numeroCuenta || ''
+        }));
+      }
+    }
 
     // Búsqueda por cédula si son dígitos
     if (resultados.length === 0 && /^\d+$/.test(tokens.join(''))) {

@@ -315,31 +315,263 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
     };
   }
 
-  // ── 2. RESUMEN DE NÓMINA / HISTORIAL DE LIQUIDACIONES ──────────────────────
-  if (q.includes('resumen nomina') || q.includes('nomina actual') || q.includes('informe liquidacion') || q.includes('total pagado') || q.includes('total pendiente') || (q.includes('resumen') && !q.includes('remesa'))) {
-    const { data: historial, error } = await supabase.from('historial_liquidaciones').select('*');
+  // ── 2. CONSULTAS DEL CUADRO DE NÓMINA EN VIVO ──────────────────────────────
+  const cargosConocidos = [
+    'CONTRATISTAS DE ADMINISTRACION', '5 - 6', '6 - 6', 'CARTON C', 'GUACANDA',
+    'TERCERA', 'ROZO', '2 - 10', 'MAYORISTA', 'GUABINAS', 'BOLIVAR', 'REMESAS'
+  ];
+  const cargoMencionadoEnNomina = cargosConocidos.find(c => q.includes(c.toLowerCase()));
+
+  // 2.1 ¿Ya metí a X? / ¿Está X en la nómina?
+  const esPreguntaYaIngresado =
+    (q.includes('ya meti') || q.includes('ya ingrese') || q.includes('ya liquide') ||
+     q.includes('ya agregue') || q.includes('esta en la nomina') || q.includes('esta en el cuadro') ||
+     q.includes('ya esta metid') || q.includes('ya esta ingresad') || q.includes('aparece en la nomina') ||
+     q.includes('esta en la lista') || (q.includes('ya') && (q.includes('liquid') || q.includes('ingresad') || q.includes('metid'))));
+
+  if (esPreguntaYaIngresado) {
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+    const { data: trabajadores } = await supabase.from('trabajadores').select('*');
+
+    const palabrasIgnoradas = new Set([
+      'ya', 'meti', 'metido', 'ingrese', 'ingresado', 'ingresada', 'liquide', 'liquidado',
+      'agregue', 'agregado', 'esta', 'en', 'la', 'el', 'nomina', 'cuadro', 'lista', 'de',
+      'a', 'al', 'o', 'y', 'por', 'favor', 'dime', 'si', 'aparece', 'persona'
+    ]);
+
+    const tokens = q.split(/\s+/).filter(t => t.length >= 3 && !palabrasIgnoradas.has(t));
+
+    if (tokens.length > 0) {
+      const enNomina = (historial || []).find(h => {
+        const nom = (h.persona?.nombre || '').toLowerCase();
+        const ced = (h.persona?.cedula || '').toLowerCase();
+        return tokens.some(tk => nom.includes(tk) || ced.includes(tk));
+      });
+
+      if (enNomina) {
+        const turnos = enNomina.form?.diasTurno || 0;
+        const horas = enNomina.form?.horasAdicionales || 0;
+        const neto = enNomina.resultado?.neto || 0;
+        const estado = enNomina.estado || 'Pendiente';
+        const estadoIcon = estado === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente de pago';
+
+        return {
+          text: `✅ **Sí, ${enNomina.persona?.nombre} ya está en el cuadro de nómina.**\n\n` +
+            `• 👤 **Cédula**: \`${enNomina.persona?.cedula}\`\n` +
+            `• 🏢 **Parqueadero**: ${enNomina.persona?.cargo || 'No asignado'}\n` +
+            `• 📅 **Días turno liquidados**: **${turnos} días**\n` +
+            (horas > 0 ? `• ⏱️ **Horas adicionales**: ${horas} hrs\n` : '') +
+            `• 💵 **Neto a pagar**: **${fmt(neto)}**\n` +
+            `• 📌 **Estado**: ${estadoIcon}\n` +
+            `• 💳 **Forma de pago**: ${enNomina.persona?.formaPago || 'No definida'} (${enNomina.persona?.numeroCuenta || 'Sin cuenta'})`
+        };
+      }
+
+      const enTrabajadores = (trabajadores || []).find(t => {
+        const nom = (t.nombre || '').toLowerCase();
+        const ced = (t.cedula || '').toLowerCase();
+        return tokens.some(tk => nom.includes(tk) || ced.includes(tk));
+      });
+
+      if (enTrabajadores) {
+        return {
+          text: `❌ **No, ${enTrabajadores.nombre} (C.C. \`${enTrabajadores.cedula}\`) aún NO ha sido ingresado en la nómina.**\n\n` +
+            `• 🏢 **Parqueadero / Cargo**: ${enTrabajadores.cargo || 'No asignado'}\n` +
+            `• 💰 **Valor de Turno registrado**: ${fmt(enTrabajadores.valor_turno || 0)}\n` +
+            `• 💳 **Forma de Pago**: ${enTrabajadores.forma_pago || 'No definida'}\n\n` +
+            `💡 *Puedes liquidarlo seleccionándolo en el formulario de la pantalla.*`
+        };
+      }
+
+      return {
+        text: `🔍 No encontré a nadie con los términos *" ${tokens.join(' ')}"* ni en la nómina activa ni en la lista de trabajadores de Fundamiga.`
+      };
+    }
+  }
+
+  // 2.2 ¿Quién fue el último ingresado? / ¿Últimos que metí?
+  const esPreguntaUltimos =
+    q.includes('ultimo que meti') || q.includes('a quien meti de ultimo') ||
+    q.includes('ultimos ingresados') || q.includes('ultimas personas') ||
+    q.includes('ultimo ingresado') || q.includes('ultimos agregados') ||
+    q.includes('quien fue el ultimo');
+
+  if (esPreguntaUltimos) {
+    const { data: historial } = await supabase
+      .from('historial_liquidaciones')
+      .select('*')
+      .order('creado_at', { ascending: false });
+
+    if (!historial || historial.length === 0) {
+      return { text: `📋 Aún no has ingresado a ninguna persona al cuadro de nómina.` };
+    }
+
+    const ultimos = historial.slice(0, 5);
+    let txt = `🕒 **Últimas personas ingresadas al cuadro (${ultimos.length})**:\n\n`;
+
+    ultimos.forEach((item, idx) => {
+      txt += `${idx + 1}. 👤 **${item.persona?.nombre}** (${item.persona?.cargo || 'General'})\n` +
+        `   • Turnos: **${item.form?.diasTurno || 0} días** | Neto: **${fmt(item.resultado?.neto || 0)}** | Estado: *${item.estado || 'Pendiente'}*\n`;
+    });
+
+    return { text: txt.trim() };
+  }
+
+  // 2.3 ¿Quiénes faltan por liquidar / ingresar?
+  const esPreguntaFaltan =
+    q.includes('quienes faltan') || q.includes('quien falta') ||
+    q.includes('quienes no estan') || q.includes('falta por meter') ||
+    q.includes('faltan por meter') || q.includes('faltan por liquidar') ||
+    q.includes('faltan por ingresar') || q.includes('quien no esta');
+
+  if (esPreguntaFaltan) {
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+    const { data: trabajadores } = await supabase.from('trabajadores').select('*').order('nombre');
+
+    if (!trabajadores || trabajadores.length === 0) {
+      return { text: `No hay trabajadores registrados en la base de datos.` };
+    }
+
+    const cedulasLiquidadas = new Set((historial || []).map(h => String(h.persona?.cedula || '').trim()));
+    let faltantes = trabajadores.filter(t => !cedulasLiquidadas.has(String(t.cedula || '').trim()));
+
+    if (cargoMencionadoEnNomina) {
+      faltantes = faltantes.filter(t => t.cargo === cargoMencionadoEnNomina);
+    }
+
+    if (faltantes.length === 0) {
+      return {
+        text: `🎉 **¡Excelente! No falta ningún trabajador por liquidar**` +
+          (cargoMencionadoEnNomina ? ` en **${cargoMencionadoEnNomina}**.` : `.\n\nTodos los ${trabajadores.length} trabajadores registrados en el sistema ya están en el cuadro de nómina.`)
+      };
+    }
+
+    const agrupadosPorCargo: Record<string, typeof faltantes> = {};
+    for (const f of faltantes) {
+      const c = f.cargo || 'SIN PARQUEADERO';
+      if (!agrupadosPorCargo[c]) agrupadosPorCargo[c] = [];
+      agrupadosPorCargo[c].push(f);
+    }
+
+    let txt = `⏳ **Faltan por ingresar ${faltantes.length} trabajador(es)**` +
+      (cargoMencionadoEnNomina ? ` en **${cargoMencionadoEnNomina}**` : ` (Llevas ${historial?.length || 0} de ${trabajadores.length})`) +
+      `:\n\n`;
+
+    Object.entries(agrupadosPorCargo).forEach(([cargo, lista]) => {
+      txt += `🏢 **${cargo}** (${lista.length}):\n`;
+      lista.forEach(t => {
+        txt += `   • **${t.nombre}** (C.C. \`${t.cedula}\`) — Turno: ${fmt(t.valor_turno || 0)}\n`;
+      });
+      txt += `\n`;
+    });
+
+    return { text: txt.trim() };
+  }
+
+  // 2.4 ¿Quiénes van? / ¿A quiénes he metido? / ¿Quiénes están?
+  const esPreguntaQuienesVan =
+    q.includes('quienes van') || q.includes('quienes estan') ||
+    q.includes('a quienes he metido') || q.includes('quienes llevo') ||
+    q.includes('a quienes meti') || q.includes('quienes ya meti') ||
+    q.includes('lista de ingresados') || q.includes('personas ingresadas') ||
+    q.includes('quienes tengo') || q.includes('a quien llevo') ||
+    (q.includes('quienes') && (q.includes('cuadro') || q.includes('tabla') || q.includes('nomina')));
+
+  if (esPreguntaQuienesVan) {
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+
+    if (!historial || historial.length === 0) {
+      return {
+        text: `📋 **El cuadro de nómina está vacío actualmente.**\n\nNo has ingresado a ninguna persona todavía. Puedes seleccionarlos en el formulario para empezar a liquidar.`
+      };
+    }
+
+    let listaItems = historial;
+    if (cargoMencionadoEnNomina) {
+      listaItems = historial.filter(h => h.persona?.cargo === cargoMencionadoEnNomina);
+      if (listaItems.length === 0) {
+        return {
+          text: `ℹ️ Aún no has ingresado a ningún trabajador del parqueadero **${cargoMencionadoEnNomina}** en el cuadro de nómina.`
+        };
+      }
+    }
+
+    const agrupadosPorCargo: Record<string, typeof listaItems> = {};
+    for (const item of listaItems) {
+      const c = item.persona?.cargo || 'SIN PARQUEADERO';
+      if (!agrupadosPorCargo[c]) agrupadosPorCargo[c] = [];
+      agrupadosPorCargo[c].push(item);
+    }
+
+    const totalNetoParcial = listaItems.reduce((acc, i) => acc + (i.resultado?.neto || 0), 0);
+
+    let txt = `👥 **Personas ingresadas al cuadro (${listaItems.length} trabajadores)**:\n\n`;
+
+    Object.entries(agrupadosPorCargo).forEach(([cargo, lista]) => {
+      txt += `🏢 **${cargo}** (${lista.length}):\n`;
+      lista.forEach(i => {
+        const turnos = i.form?.diasTurno || 0;
+        const neto = i.resultado?.neto || 0;
+        const estadoBadge = i.estado === 'Pagado' ? '✅' : '⏳';
+        txt += `   • **${i.persona?.nombre}**: ${turnos} turnos → **${fmt(neto)}** ${estadoBadge}\n`;
+      });
+      txt += `\n`;
+    });
+
+    txt += `💰 **Total Neto de este grupo**: **${fmt(totalNetoParcial)}**`;
+    return { text: txt };
+  }
+
+  // 2.5 ¿Cuántos llevo? / ¿Cómo va la nómina? / Resumen general del cuadro
+  if (
+    q.includes('cuantos llevo') || q.includes('cuantas personas van') ||
+    q.includes('cuantos van') || q.includes('como voy') ||
+    q.includes('como vamos') || q.includes('como va la nomina') ||
+    q.includes('como va el cuadro') || q.includes('cuantos hay en la nomina') ||
+    q.includes('cuantos ingresados') || q.includes('cuantos metidos') ||
+    q.includes('resumen nomina') || q.includes('nomina actual') ||
+    q.includes('informe liquidacion') || q.includes('total pagado') ||
+    q.includes('total pendiente') || (q.includes('resumen') && !q.includes('remesa'))
+  ) {
+    const { data: historial, error } = await supabase.from('historial_liquidaciones').select('*').order('creado_at', { ascending: false });
+    const { data: trabajadores } = await supabase.from('trabajadores').select('id');
+
     if (error) return { text: `Error al consultar la nómina en Supabase: ${error.message}` };
 
     if (!historial || historial.length === 0) {
-      return { text: `📋 **Informe de Nómina**:\n\nActualmente no hay liquidaciones registradas en el informe general.` };
+      return {
+        text: `📋 **Estado del Cuadro de Nómina**:\n\n` +
+          `Actualmente no hay ninguna liquidación registrada en el informe general.\n` +
+          `Llevas **0 trabajadores ingresados**.`
+      };
     }
 
     const totalRegistros = historial.length;
+    const totalDisponibles = trabajadores?.length || 0;
+    const pct = totalDisponibles > 0 ? Math.round((totalRegistros / totalDisponibles) * 100) : 0;
+
     const totalNeto = historial.reduce((acc, i) => acc + (i.resultado?.neto || 0), 0);
     const pagados = historial.filter(i => i.estado === 'Pagado');
     const pendientes = historial.filter(i => i.estado !== 'Pagado');
     const totalPagado = pagados.reduce((acc, i) => acc + (i.resultado?.neto || 0), 0);
     const totalPendiente = pendientes.reduce((acc, i) => acc + (i.resultado?.neto || 0), 0);
     const totalTurnos = historial.reduce((acc, i) => acc + (i.form?.diasTurno || 0), 0);
+    const totalHoras = historial.reduce((acc, i) => acc + (i.form?.horasAdicionales || 0), 0);
+    const totalArl = historial.reduce((acc, i) => acc + (i.resultado?.descuentoSeguridad || 0), 0);
+
+    const ultimo = historial[0];
 
     return {
-      text: `📊 **Resumen General de Nómina Activa**:\n\n` +
-        `• **Registros totales**: ${totalRegistros} personas liquidadas\n` +
-        `• **Días turno acumulados**: ${totalTurnos} días\n` +
-        `• **Total Neto a pagar**: **${fmt(totalNeto)}**\n` +
-        `• ✅ **Total Pagado**: ${fmt(totalPagado)} (${pagados.length} personas)\n` +
-        `• ⏳ **Total Pendiente**: ${fmt(totalPendiente)} (${pendientes.length} personas)\n\n` +
-        `Puedes preguntarme por una persona en específico para ver su desglose individual.`
+      text: `📊 **Estado en Vivo del Cuadro de Nómina**:\n\n` +
+        `• 👥 **Progreso**: Llevas **${totalRegistros} personas ingresadas**` + (totalDisponibles > 0 ? ` de ${totalDisponibles} (${pct}% completado)` : '') + `\n` +
+        `• 📅 **Días turno acumulados**: **${totalTurnos} días**\n` +
+        (totalHoras > 0 ? `• ⏱️ **Horas adicionales**: **${totalHoras} hrs**\n` : '') +
+        `• 💰 **Total Neto a pagar**: **${fmt(totalNeto)}**\n` +
+        `• ⏳ **Pendientes**: ${fmt(totalPendiente)} (${pendientes.length} personas)\n` +
+        `• ✅ **Pagados**: ${fmt(totalPagado)} (${pagados.length} personas)\n` +
+        (totalArl > 0 ? `• 🛡️ **Seguridad Social (ARL)**: ${fmt(totalArl)}\n` : '') +
+        (ultimo ? `\n🕒 **Última persona agregada**: **${ultimo.persona?.nombre}** (${fmt(ultimo.resultado?.neto || 0)})\n` : '') +
+        `\n💡 *Puedes preguntarme "¿Quiénes van?", "¿Quiénes faltan?" o por alguien en particular (ej: "¿Ya metí a Diana?").*`
     };
   }
 

@@ -209,34 +209,34 @@ export default function AIChatWidget() {
           {/* Chips de Preguntas Rápidas */}
           <div className="bg-emerald-50/60 border-b border-emerald-100/80 px-3 py-2 flex items-center gap-1.5 overflow-x-auto scrollbar-none">
             <button
-              onClick={() => handleSendMessage('Resumen nomina')}
-              className="text-[11px] font-bold text-emerald-800 bg-white hover:bg-emerald-100 border border-emerald-200 px-3 py-1 rounded-full whitespace-nowrap transition-all shadow-2xs flex items-center gap-1"
+              onClick={() => handleSendMessage('¿Cuántos llevo y cómo va la nómina?')}
+              className="text-[11px] font-bold text-emerald-800 bg-white hover:bg-emerald-100 border border-emerald-200 px-3 py-1 rounded-full whitespace-nowrap transition-all shadow-2xs flex items-center gap-1 cursor-pointer"
             >
-              📊 Resumen
+              📊 ¿Cuántos llevo?
+            </button>
+            <button
+              onClick={() => handleSendMessage('¿Quiénes van en el cuadro de nómina?')}
+              className="text-[11px] font-bold text-teal-800 bg-white hover:bg-teal-100 border border-teal-200 px-3 py-1 rounded-full whitespace-nowrap transition-all shadow-2xs flex items-center gap-1 cursor-pointer"
+            >
+              👥 ¿Quiénes van?
+            </button>
+            <button
+              onClick={() => handleSendMessage('¿Quiénes faltan por liquidar?')}
+              className="text-[11px] font-bold text-amber-800 bg-white hover:bg-amber-100 border border-amber-200 px-3 py-1 rounded-full whitespace-nowrap transition-all shadow-2xs flex items-center gap-1 cursor-pointer"
+            >
+              ⏳ ¿Quiénes faltan?
             </button>
             <button
               onClick={() => handleSendMessage('Auditar cuentas repetidas')}
-              className="text-[11px] font-bold text-rose-800 bg-white hover:bg-rose-100 border border-rose-200 px-3 py-1 rounded-full whitespace-nowrap transition-all shadow-2xs flex items-center gap-1"
+              className="text-[11px] font-bold text-rose-800 bg-white hover:bg-rose-100 border border-rose-200 px-3 py-1 rounded-full whitespace-nowrap transition-all shadow-2xs flex items-center gap-1 cursor-pointer"
             >
               ⚠️ Cuentas Repetidas
             </button>
             <button
               onClick={() => handleSendMessage('¿Cómo se calcula el neto?')}
-              className="text-[11px] font-bold text-teal-800 bg-white hover:bg-teal-100 border border-teal-200 px-3 py-1 rounded-full whitespace-nowrap transition-all shadow-2xs flex items-center gap-1"
+              className="text-[11px] font-bold text-slate-700 bg-white hover:bg-slate-100 border border-slate-200 px-3 py-1 rounded-full whitespace-nowrap transition-all shadow-2xs flex items-center gap-1 cursor-pointer"
             >
               🧮 Fórmulas
-            </button>
-            <button
-              onClick={() => handleSendMessage('Tabla descuento ARL')}
-              className="text-[11px] font-bold text-blue-800 bg-white hover:bg-blue-100 border border-blue-200 px-3 py-1 rounded-full whitespace-nowrap transition-all shadow-2xs flex items-center gap-1"
-            >
-              🛡️ ARL PILA
-            </button>
-            <button
-              onClick={() => handleSendMessage('Personal de remesas')}
-              className="text-[11px] font-bold text-amber-800 bg-white hover:bg-amber-100 border border-amber-200 px-3 py-1 rounded-full whitespace-nowrap transition-all shadow-2xs flex items-center gap-1"
-            >
-              🚚 Remesas
             </button>
           </div>
 

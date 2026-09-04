@@ -717,11 +717,16 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
   // ── 6. BÚSQUEDA DE TRABAJADOR POR NOMBRE, CÉDULA O CARGO ───────────────────
   const palabrasIgnoradas = new Set([
     'busca', 'buscar', 'dame', 'info', 'informacion', 'telefono', 'correo', 'cedula',
-    'de', 'el', 'la', 'los', 'las', 'un', 'una', 'hola', 'buenos', 'dias', 'tardes', 'noches',
-    'por', 'favor', 'quien', 'es', 'ver', 'datos', 'trabajador', 'persona', 'cuenta', 'cuanto', 'gana'
+    'de', 'el', 'la', 'los', 'las', 'un', 'una', 'unos', 'unas', 'hola', 'buenos', 'dias', 'tardes', 'noches',
+    'por', 'favor', 'quien', 'es', 'ver', 'datos', 'trabajador', 'persona', 'personas', 'cuenta', 'cuanto', 'gana',
+    'esta', 'estan', 'estara', 'estaran', 'aparece', 'aparecen', 'ya', 'meti', 'metido', 'metida', 'ingrese',
+    'ingresado', 'ingresada', 'liquide', 'liquidado', 'agregue', 'agregado', 'en', 'tabla', 'cuadro', 'nomina',
+    'planilla', 'lista', 'informe', 'sistema', 'dime', 'saber', 'si', 'que', 'como', 'donde', 'cuando', 'va', 'van',
+    'lleva', 'llevan', 'tiene', 'tienen', 'hay', 'pago', 'pagado', 'pagada', 'pendiente', 'pendientes'
   ]);
 
   const tokens = q
+    .replace(/[?¿!¡.,:;]/g, '')
     .split(/\s+/)
     .filter(palabra => palabra.length >= 2 && !palabrasIgnoradas.has(palabra));
 
@@ -755,15 +760,28 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
     }
 
     if (resultados.length > 0) {
-      let respuesta = `🔎 **Resultados encontrados (${resultados.length})**:\n\n`;
+      const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+
+      let respuesta = `🔎 **Información encontrada (${resultados.length})**:\n\n`;
       const accionesList: ChatAction[] = [];
 
       for (const t of resultados) {
-        respuesta += `👤 **${t.nombre}**\n`;
-        respuesta += `   • **Cédula**: ${t.cedula}\n`;
+        // Verificar si ya está ingresado en el cuadro de nómina actual
+        const enNomina = (historial || []).find(h => String(h.persona?.cedula || '').trim() === String(t.cedula).trim());
+
+        respuesta += `👤 **${t.nombre}** (C.C. \`${t.cedula}\`)\n`;
         respuesta += `   • **Parqueadero / Cargo**: ${t.cargo || 'No asignado'}\n`;
-        respuesta += `   • **Valor Turno**: ${fmt(t.valor_turno || 0)}\n`;
-        respuesta += `   • **Valor Hora Adicional**: ${fmt(t.valor_hora_adicional || 0)}\n`;
+
+        if (enNomina) {
+          const turnos = enNomina.form?.diasTurno || 0;
+          const neto = enNomina.resultado?.neto || 0;
+          const estadoIcon = enNomina.estado === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente';
+          respuesta += `   • 📊 **Estado en Nómina**: **${turnos} turnos** → **${fmt(neto)}** (${estadoIcon})\n`;
+        } else {
+          respuesta += `   • 📊 **Estado en Nómina**: ❌ *Aún no ingresado en el cuadro actual*\n`;
+        }
+
+        respuesta += `   • **Valor Turno**: ${fmt(t.valor_turno || 0)} | **Hora Extra**: ${fmt(t.valor_hora_adicional || 0)}\n`;
         respuesta += `   • **Forma de Pago**: ${t.forma_pago || 'No definida'}\n`;
         respuesta += `   • **No. Cuenta**: ${t.numero_cuenta ? `\`${t.numero_cuenta}\`` : '⚠️ Sin cuenta registrada'}\n\n`;
 

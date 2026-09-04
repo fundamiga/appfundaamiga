@@ -94,7 +94,17 @@ export async function processAIChatMessage(message: string): Promise<ChatRespons
 }
 
 async function processFundamigaQuery(query: string): Promise<ChatResponse> {
-  const q = query.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  let q = query.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+
+  // Corrección inteligente de dedazos y variaciones ortográficas frecuentes
+  q = q
+    .replace(/\b(quienen|quiene|quieness|kien|kienes|kienen)\b/g, 'quienes')
+    .replace(/\b(perosnas|pesonas|personass|pesona|personad|perosna|persoas)\b/g, 'personas')
+    .replace(/\b(trabajadore|trabajadorse|trabajadoers)\b/g, 'trabajadores')
+    .replace(/\b(nominaa|nmina|monina|nomnia)\b/g, 'nomina')
+    .replace(/\b(tabal|tbala|tavla)\b/g, 'tabla')
+    .replace(/\b(cuadroo|cudaros?|cuadroa)\b/g, 'cuadro')
+    .replace(/\b(cuant[ao]ss?|cuantoa|cuntos|cuatas)\b/g, 'cuantos');
 
   // ── 0. SALUDOS Y PRESENTACIÓN ───────────────────────────────────────────────
   const esSaludo = /^(hola|buenos\s*dias|buenas\s*tardes|buenas\s*noches|saludos|que\s*tal|buenas|hi|hello)\b/i.test(q);
@@ -322,12 +332,21 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
   ];
   const cargoMencionadoEnNomina = cargosConocidos.find(c => q.includes(c.toLowerCase()));
 
+  // Palabras clave semánticas para matching flexible y tolerante a dedazos
+  const tienePalabraCuantos = /\b(cuant[oa]s?|total|numero\s*de)\b/.test(q);
+  const tienePalabraEntidad = /\b(personas?|gente|trabajadores?|empleados?|liquidad[oa]s?|registros?)\b/.test(q);
+  const tienePalabraLugar = /\b(tabla|cuadro|nomina|informe|planilla|lista|sistema)\b/.test(q);
+  const tienePalabraAccion = /\b(llevo|llevamos|van|hay|metid[oa]s?|ingresad[oa]s?|registrad[oa]s?)\b/.test(q);
+  const tienePalabraQuienes = /\b(quien|quienes|cuales)\b/.test(q);
+  const tienePalabraEstar = /\b(van|estan|llevo|llevamos|meti|metidos|ingrese|ingresados|liquide|liquidados|tengo|hay)\b/.test(q);
+  const tienePalabraFaltar = /\b(falta|faltan|faltante|faltantes)\b/.test(q);
+
   // 2.1 ¿Ya metí a X? / ¿Está X en la nómina?
   const esPreguntaYaIngresado =
-    (q.includes('ya meti') || q.includes('ya ingrese') || q.includes('ya liquide') ||
-     q.includes('ya agregue') || q.includes('esta en la nomina') || q.includes('esta en el cuadro') ||
-     q.includes('ya esta metid') || q.includes('ya esta ingresad') || q.includes('aparece en la nomina') ||
-     q.includes('esta en la lista') || (q.includes('ya') && (q.includes('liquid') || q.includes('ingresad') || q.includes('metid'))));
+    /\b(ya\s*(meti|ingrese|liquide|agregue|esta|aparece))\b/.test(q) ||
+    /\b(esta\s*en\s*la\s*(nomina|tabla|cuadro|lista))\b/.test(q) ||
+    /\b(aparece\s*en\s*la\s*(nomina|tabla|cuadro|lista))\b/.test(q) ||
+    (q.includes('esta en la nomina') || q.includes('esta en el cuadro') || q.includes('esta en la tabla'));
 
   if (esPreguntaYaIngresado) {
     const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
@@ -336,7 +355,7 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
     const palabrasIgnoradas = new Set([
       'ya', 'meti', 'metido', 'ingrese', 'ingresado', 'ingresada', 'liquide', 'liquidado',
       'agregue', 'agregado', 'esta', 'en', 'la', 'el', 'nomina', 'cuadro', 'lista', 'de',
-      'a', 'al', 'o', 'y', 'por', 'favor', 'dime', 'si', 'aparece', 'persona'
+      'a', 'al', 'o', 'y', 'por', 'favor', 'dime', 'si', 'aparece', 'persona', 'tabla'
     ]);
 
     const tokens = q.split(/\s+/).filter(t => t.length >= 3 && !palabrasIgnoradas.has(t));
@@ -419,6 +438,7 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
 
   // 2.3 ¿Quiénes faltan por liquidar / ingresar?
   const esPreguntaFaltan =
+    tienePalabraFaltar ||
     q.includes('quienes faltan') || q.includes('quien falta') ||
     q.includes('quienes no estan') || q.includes('falta por meter') ||
     q.includes('faltan por meter') || q.includes('faltan por liquidar') ||
@@ -470,6 +490,7 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
 
   // 2.4 ¿Quiénes van? / ¿A quiénes he metido? / ¿Quiénes están?
   const esPreguntaQuienesVan =
+    (tienePalabraQuienes && (tienePalabraEstar || tienePalabraLugar)) ||
     q.includes('quienes van') || q.includes('quienes estan') ||
     q.includes('a quienes he metido') || q.includes('quienes llevo') ||
     q.includes('a quienes meti') || q.includes('quienes ya meti') ||
@@ -523,7 +544,8 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
   }
 
   // 2.5 ¿Cuántos llevo? / ¿Cómo va la nómina? / Resumen general del cuadro
-  if (
+  const esPreguntaCuantosLlevo =
+    (tienePalabraCuantos && (tienePalabraEntidad || tienePalabraLugar || tienePalabraAccion)) ||
     q.includes('cuantos llevo') || q.includes('cuantas personas van') ||
     q.includes('cuantos van') || q.includes('como voy') ||
     q.includes('como vamos') || q.includes('como va la nomina') ||
@@ -531,8 +553,9 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
     q.includes('cuantos ingresados') || q.includes('cuantos metidos') ||
     q.includes('resumen nomina') || q.includes('nomina actual') ||
     q.includes('informe liquidacion') || q.includes('total pagado') ||
-    q.includes('total pendiente') || (q.includes('resumen') && !q.includes('remesa'))
-  ) {
+    q.includes('total pendiente') || (q.includes('resumen') && !q.includes('remesa'));
+
+  if (esPreguntaCuantosLlevo) {
     const { data: historial, error } = await supabase.from('historial_liquidaciones').select('*').order('creado_at', { ascending: false });
     const { data: trabajadores } = await supabase.from('trabajadores').select('id');
 

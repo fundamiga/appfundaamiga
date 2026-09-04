@@ -172,6 +172,65 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
     };
   }
 
+  // ── 5.1 AUDITORÍA DE CUENTAS BANCARIAS REPETIDAS ────────────────────────────
+  if (
+    q.includes('cuenta repetida') || q.includes('cuentas repetidas') ||
+    q.includes('cuenta duplicada') || q.includes('cuentas duplicadas') ||
+    q.includes('mismo numero de cuenta') || q.includes('misma cuenta') ||
+    q.includes('cuentas compartidas') || q.includes('cuenta compartida') ||
+    q.includes('auditar cuentas') || q.includes('auditoria de cuentas') ||
+    q.includes('repetidas') || q.includes('duplicadas') ||
+    (q.includes('cuenta') && (q.includes('duplicad') || q.includes('repetid') || q.includes('igual')))
+  ) {
+    const { data: todosTrabajadores, error } = await supabase
+      .from('trabajadores')
+      .select('id, nombre, cedula, cargo, numero_cuenta, forma_pago');
+
+    if (error) {
+      return { text: `Error al consultar la base de datos de trabajadores: ${error.message}` };
+    }
+
+    // Normalizar cuentas y agrupar
+    const mapaCuentas = new Map<string, typeof todosTrabajadores>();
+
+    for (const trab of (todosTrabajadores || [])) {
+      if (trab.forma_pago === 'Efectivo') continue;
+      const raw = (trab.numero_cuenta || '').trim();
+      const limpia = raw.replace(/[\s\-\.]/g, '');
+      // Filtrar números de cuenta válidos
+      if (limpia && limpia.length >= 4 && !/^(0+|sin|no|na|none|null)$/i.test(limpia)) {
+        if (!mapaCuentas.has(limpia)) {
+          mapaCuentas.set(limpia, []);
+        }
+        mapaCuentas.get(limpia)!.push(trab);
+      }
+    }
+
+    const duplicadas = Array.from(mapaCuentas.entries()).filter(([_, lista]) => lista.length > 1);
+
+    if (duplicadas.length === 0) {
+      return {
+        text: `✅ **Auditoría de Cuentas Exitosa**:\n\n` +
+          `No se detectaron cuentas bancarias repetidas en el sistema.\n` +
+          `Cada trabajador registrado cuenta con un número de cuenta bancaria único.`
+      };
+    }
+
+    let respuesta = `🚨 **Alerta de Auditoría: Se encontraron ${duplicadas.length} cuenta(s) bancaria(s) compartida(s)**:\n\n`;
+
+    duplicadas.forEach(([cuenta, lista], idx) => {
+      respuesta += `**${idx + 1}. No. Cuenta: \`${cuenta}\`** (${lista[0]?.forma_pago || 'Bancaria'})\n`;
+      lista.forEach(t => {
+        respuesta += `   • 👤 **${t.nombre}** (CC: \`${t.cedula}\`) — Cargo: *${t.cargo || 'No asignado'}*\n`;
+      });
+      respuesta += `\n`;
+    });
+
+    respuesta += `⚠️ *Nota: Verifica si estas personas son familiares que autorizaron el pago a la misma cuenta o si se trata de un error de digitación al crear al trabajador.*`;
+
+    return { text: respuesta.trim() };
+  }
+
   // ── 6. BÚSQUEDA DE TRABAJADOR POR NOMBRE, CÉDULA O CARGO ───────────────────
   const palabrasIgnoradas = new Set([
     'busca', 'buscar', 'dame', 'info', 'informacion', 'telefono', 'correo', 'cedula',

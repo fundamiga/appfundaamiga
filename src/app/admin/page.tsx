@@ -1,7 +1,7 @@
 'use client';
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ArrowLeft, Plus, Trash2, Pencil, Check, X, Search, Users, ChevronDown, RefreshCw, AlertCircle, Building2 } from 'lucide-react';
+import React, { useState, useEffect, useCallback, useRef, useMemo } from 'react';
+import { ArrowLeft, Plus, Trash2, Pencil, Check, X, Search, Users, ChevronDown, RefreshCw, AlertCircle, Building2, AlertTriangle } from 'lucide-react';
 import Link from 'next/link';
 import Image from 'next/image';
 import { supabase } from '@/lib/supabase';
@@ -128,10 +128,44 @@ export default function AdminPage() {
     if (errores[field]) setErrores(prev => ({ ...prev, [field]: undefined }));
   };
 
+  const [soloCuentasRepetidas, setSoloCuentasRepetidas] = useState(false);
+
+  const normalizarCuenta = (c?: string) => (c || '').replace(/[\s\-\.]/g, '').trim();
+
+  // Detectar y agrupar cuentas bancarias repetidas
+  const cuentasRepetidasMap = useMemo(() => {
+    const map = new Map<string, Persona[]>();
+    for (const p of personas) {
+      if (p.forma_pago === 'Efectivo') continue;
+      const limpia = normalizarCuenta(p.numero_cuenta);
+      if (limpia && limpia.length >= 4 && !/^(0+|sin|no|na|none|null)$/i.test(limpia)) {
+        if (!map.has(limpia)) map.set(limpia, []);
+        map.get(limpia)!.push(p);
+      }
+    }
+    const repetidas = new Map<string, Persona[]>();
+    map.forEach((lista, cuenta) => {
+      if (lista.length > 1) {
+        repetidas.set(cuenta, lista);
+      }
+    });
+    return repetidas;
+  }, [personas]);
+
+  // Alerta en vivo en el formulario si la cuenta ingresada ya pertenece a otra persona
+  const cuentaFormLimpia = normalizarCuenta(form.numero_cuenta);
+  const personasConMismaCuentaEnForm = useMemo(() => {
+    if (!cuentaFormLimpia || cuentaFormLimpia.length < 4 || form.forma_pago === 'Efectivo') return [];
+    return personas.filter(p => p.id !== editandoId && normalizarCuenta(p.numero_cuenta) === cuentaFormLimpia);
+  }, [cuentaFormLimpia, form.forma_pago, personas, editandoId]);
+
   const personasFiltradas = personas.filter(p => {
     const matchB = p.nombre.toLowerCase().includes(busqueda.toLowerCase()) || p.cedula.includes(busqueda);
     const matchC = filtroCargo ? p.cargo === filtroCargo : true;
-    return matchB && matchC;
+    const matchRep = soloCuentasRepetidas
+      ? cuentasRepetidasMap.has(normalizarCuenta(p.numero_cuenta))
+      : true;
+    return matchB && matchC && matchRep;
   });
 
   // Resumen por parqueadero
@@ -321,6 +355,25 @@ export default function AdminPage() {
                     {form.forma_pago === 'Davivienda' && (
                       <p className="text-[9px] text-blue-500 mt-1 font-medium">Necesario para el archivo de pagos Davivienda</p>
                     )}
+
+                    {personasConMismaCuentaEnForm.length > 0 && (
+                      <div className="mt-2.5 p-3 bg-amber-50 border border-amber-300 rounded-xl text-xs text-amber-900 animate-in fade-in">
+                        <div className="flex items-center gap-2 font-bold text-amber-900">
+                          <AlertTriangle size={15} className="text-amber-600 shrink-0" />
+                          <span>¡Cuenta repetida en el sistema!</span>
+                        </div>
+                        <p className="text-[11px] text-amber-800 mt-1">
+                          Esta cuenta ya pertenece a {personasConMismaCuentaEnForm.length === 1 ? 'otro trabajador' : `${personasConMismaCuentaEnForm.length} trabajadores`}:
+                        </p>
+                        <div className="mt-1 space-y-1">
+                          {personasConMismaCuentaEnForm.map(p => (
+                            <div key={p.id} className="text-[10px] bg-white/70 p-1.5 rounded border border-amber-200 text-amber-950 font-medium">
+                              • <strong>{p.nombre}</strong> (C.C. {p.cedula}) — {p.cargo}
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -349,6 +402,30 @@ export default function AdminPage() {
           <div className="lg:col-span-2">
             <div className="bg-white rounded-[2rem] border border-gray-100 overflow-hidden shadow-sm">
               <div className="p-6 border-b border-gray-100 space-y-3">
+                {cuentasRepetidasMap.size > 0 && (
+                  <div className="p-3.5 bg-amber-50/90 border border-amber-300 rounded-2xl flex items-center justify-between gap-3 text-xs text-amber-900 shadow-2xs">
+                    <div className="flex items-center gap-2.5">
+                      <div className="w-7 h-7 rounded-xl bg-amber-500/20 text-amber-700 flex items-center justify-center shrink-0">
+                        <AlertTriangle size={15} />
+                      </div>
+                      <div>
+                        <p className="font-bold text-amber-950">Auditoría de Cuentas: {cuentasRepetidasMap.size} cuenta(s) repetida(s)</p>
+                        <p className="text-[10px] text-amber-800">Hay trabajadores distintos registrados con el mismo número de cuenta bancaria.</p>
+                      </div>
+                    </div>
+                    <button
+                      onClick={() => setSoloCuentasRepetidas(!soloCuentasRepetidas)}
+                      className={`px-3 py-1.5 rounded-xl text-[11px] font-black transition-all shrink-0 ${
+                        soloCuentasRepetidas
+                          ? 'bg-amber-600 text-white shadow-xs'
+                          : 'bg-white text-amber-900 border border-amber-300 hover:bg-amber-100'
+                      }`}
+                    >
+                      {soloCuentasRepetidas ? '✓ Mostrando repetidas' : 'Ver repetidas'}
+                    </button>
+                  </div>
+                )}
+
                 <div className="flex items-center gap-3 bg-gray-50 rounded-xl px-4 py-3 border border-gray-200 focus-within:border-emerald-400 focus-within:ring-2 focus-within:ring-emerald-100 transition-all">
                   <Search size={15} className="text-slate-400 shrink-0" />
                   <input value={busqueda} onChange={e => setBusqueda(e.target.value)}
@@ -405,7 +482,24 @@ export default function AdminPage() {
                           <td className="px-5 py-4">
                             <span className="text-[10px] font-bold text-blue-600 bg-blue-50 px-2 py-0.5 rounded-full border border-blue-100">{p.forma_pago}</span>
                             {p.forma_pago !== 'Efectivo' && (
-                              <p className="text-[9px] text-slate-400 font-mono mt-0.5">{p.numero_cuenta || <span className="text-red-400 font-bold">Sin cuenta</span>}</p>
+                              <div className="mt-0.5">
+                                <p className="text-[9px] text-slate-400 font-mono">{p.numero_cuenta || <span className="text-red-400 font-bold">Sin cuenta</span>}</p>
+                                {(() => {
+                                  const cNorm = normalizarCuenta(p.numero_cuenta);
+                                  const repetidos = cNorm ? cuentasRepetidasMap.get(cNorm) : null;
+                                  if (!repetidos || repetidos.length <= 1) return null;
+                                  const otros = repetidos.filter(o => o.id !== p.id);
+                                  return (
+                                    <div
+                                      className="inline-flex items-center gap-1 mt-1 px-1.5 py-0.5 bg-amber-50 text-amber-800 border border-amber-200 rounded text-[9px] font-bold"
+                                      title={`Esta cuenta también está registrada en: ${otros.map(o => `${o.nombre} (${o.cargo})`).join(', ')}`}
+                                    >
+                                      <AlertTriangle size={10} className="text-amber-600 shrink-0" />
+                                      Compartida ({otros.length + 1})
+                                    </div>
+                                  );
+                                })()}
+                              </div>
                             )}
                           </td>
                           <td className="px-5 py-4">

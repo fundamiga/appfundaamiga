@@ -182,6 +182,12 @@ export default function AIChatWidget() {
               📊 Resumen
             </button>
             <button
+              onClick={() => handleSendMessage('Auditar cuentas repetidas')}
+              className="text-[11px] font-bold text-rose-800 bg-white hover:bg-rose-100 border border-rose-200 px-3 py-1 rounded-full whitespace-nowrap transition-all shadow-2xs flex items-center gap-1"
+            >
+              ⚠️ Cuentas Repetidas
+            </button>
+            <button
               onClick={() => handleSendMessage('¿Cómo se calcula el neto?')}
               className="text-[11px] font-bold text-teal-800 bg-white hover:bg-teal-100 border border-teal-200 px-3 py-1 rounded-full whitespace-nowrap transition-all shadow-2xs flex items-center gap-1"
             >

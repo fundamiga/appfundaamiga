@@ -823,6 +823,58 @@ export const LiquidacionPersonal: React.FC = () => {
   const [editandoIndex, setEditandoIndex] = useState<number | null>(null);
   const [formEditar, setFormEditar] = useState<FormLiquidacion | null>(null);
   const [personaEditar, setPersonaEditar] = useState<Persona | null>(null);
+  const [resaltadoCedula, setResaltadoCedula] = useState<string | null>(null);
+
+  // Escuchar orden de desplazamiento de la IA hacia la fila en la tabla
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const custom = e as CustomEvent<{ cedula: string; nombre?: string }>;
+      const cedula = custom.detail?.cedula;
+      const nombre = custom.detail?.nombre;
+      if (!cedula && !nombre) return;
+
+      // Limpiar filtros para garantizar que la persona no esté filtrada u oculta
+      setFiltroHistorial('');
+      setFiltroCargo('');
+      setFiltroBanco('');
+      setFiltroQuincena('');
+
+      if (cedula) {
+        setResaltadoCedula(cedula);
+      }
+
+      setTimeout(() => {
+        // Asegurar que la tabla sea visible en la pantalla
+        if (tablaRef.current) {
+          tablaRef.current.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+        }
+
+        // Buscar la fila por ID de cédula o nombre
+        let el: HTMLElement | null = null;
+        if (cedula) {
+          el = document.getElementById(`fila-nomina-${cedula}`);
+        }
+        if (!el && nombre) {
+          el = document.querySelector(`[data-nombre="${nombre}"]`);
+        }
+
+        // Desplazar suavemente hasta centrar la fila exacta
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.remove('fila-resaltada-ia');
+          void el.offsetWidth;
+          el.classList.add('fila-resaltada-ia');
+        }
+      }, 150);
+
+      setTimeout(() => {
+        setResaltadoCedula(null);
+      }, 4000);
+    };
+
+    window.addEventListener('fundamiga:desplazar-a-trabajador', handler);
+    return () => window.removeEventListener('fundamiga:desplazar-a-trabajador', handler);
+  }, []);
 
   const editRowRef = useRef<HTMLTableRowElement>(null);
 
@@ -2119,7 +2171,21 @@ export const LiquidacionPersonal: React.FC = () => {
                       return matchNombre && matchCargo && matchQuincena && matchBanco;
                     }).flatMap(({ item, originalIndex }) => {
                       const rows = [];
-                      rows.push(<tr key={`row-${originalIndex}`} className={`border-b transition-colors ${modoClaro ? "border-gray-100 hover:bg-gray-50" : "border-slate-800/60 hover:bg-slate-800/30"}`}>
+                      const filaId = item.persona.cedula ? `fila-nomina-${item.persona.cedula}` : `fila-nomina-nom-${encodeURIComponent(item.persona.nombre)}`;
+                      const estaResaltado = resaltadoCedula && item.persona.cedula === resaltadoCedula;
+                      rows.push(<tr
+                        key={`row-${originalIndex}`}
+                        id={filaId}
+                        data-cedula={item.persona.cedula || ''}
+                        data-nombre={item.persona.nombre}
+                        className={`border-b transition-all duration-300 ${
+                          estaResaltado
+                            ? "fila-resaltada-ia bg-emerald-500/25 ring-2 ring-emerald-400"
+                            : modoClaro
+                            ? "border-gray-100 hover:bg-gray-50"
+                            : "border-slate-800/60 hover:bg-slate-800/30"
+                        }`}
+                      >
                         <td className={`px-4 py-3.5 font-bold whitespace-nowrap ${modoClaro ? "text-slate-800" : "text-white"}`}>{item.persona.nombre}</td>
                         <td className="px-4 py-3.5 text-slate-500 font-mono text-xs">{item.persona.cedula || '—'}</td>
                         <td className="px-4 py-3.5"><span className="text-[9px] font-bold text-teal-300 bg-teal-500/10 px-2 py-0.5 rounded-full border border-teal-500/20 whitespace-nowrap">{item.persona.cargo}</span></td>

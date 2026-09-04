@@ -4,7 +4,7 @@ import { calcularDescuentoARLPila } from '@/utils/calcularDescuentoARL';
 
 export interface ChatAction {
   label: string;
-  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO';
+  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO' | 'DESPLAZAR_TABLA';
   payload?: any;
 }
 
@@ -382,7 +382,17 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
             (horas > 0 ? `• ⏱️ **Horas adicionales**: ${horas} hrs\n` : '') +
             `• 💵 **Neto a pagar**: **${fmt(neto)}**\n` +
             `• 📌 **Estado**: ${estadoIcon}\n` +
-            `• 💳 **Forma de pago**: ${enNomina.persona?.formaPago || 'No definida'} (${enNomina.persona?.numeroCuenta || 'Sin cuenta'})`
+            `• 💳 **Forma de pago**: ${enNomina.persona?.formaPago || 'No definida'} (${enNomina.persona?.numeroCuenta || 'Sin cuenta'})`,
+          acciones: [
+            {
+              label: `📍 Ubicar a ${enNomina.persona?.nombre.split(' ')[0]} en la tabla`,
+              tipo: 'DESPLAZAR_TABLA',
+              payload: {
+                cedula: enNomina.persona?.cedula,
+                nombre: enNomina.persona?.nombre
+              }
+            }
+          ]
         };
       }
 
@@ -777,8 +787,25 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
           const neto = enNomina.resultado?.neto || 0;
           const estadoIcon = enNomina.estado === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente';
           respuesta += `   • 📊 **Estado en Nómina**: **${turnos} turnos** → **${fmt(neto)}** (${estadoIcon})\n`;
+
+          accionesList.push({
+            label: `📍 Ubicar a ${t.nombre.split(' ')[0]} en la tabla`,
+            tipo: 'DESPLAZAR_TABLA',
+            payload: {
+              cedula: t.cedula,
+              nombre: t.nombre
+            }
+          });
         } else {
           respuesta += `   • 📊 **Estado en Nómina**: ❌ *Aún no ingresado en el cuadro actual*\n`;
+          accionesList.push({
+            label: `📍 Ubicar a ${t.nombre.split(' ')[0]} en el sistema`,
+            tipo: 'DESPLAZAR_TABLA',
+            payload: {
+              cedula: t.cedula,
+              nombre: t.nombre
+            }
+          });
         }
 
         respuesta += `   • **Valor Turno**: ${fmt(t.valor_turno || 0)} | **Hora Extra**: ${fmt(t.valor_hora_adicional || 0)}\n`;

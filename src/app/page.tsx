@@ -1,6 +1,6 @@
 'use client';
 import Image from 'next/image';
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { CheckCircle, Calculator, ShieldCheck, Package } from 'lucide-react';
 import { LiquidacionPersonal } from '@/components/LiquidacionPersonal';
 import ControlARL from '@/components/ControlARL';
@@ -9,6 +9,14 @@ import { BotonAccesoAdmin } from '@/components/BotonAccesoAdmin';
 
 export default function SistemaControlDonaciones() {
   const [tabActiva, setTabActiva] = useState<'liquidacion' | 'arl' | 'remesas'>('liquidacion');
+
+  useEffect(() => {
+    const handler = () => {
+      setTabActiva('liquidacion');
+    };
+    window.addEventListener('fundamiga:desplazar-a-trabajador', handler);
+    return () => window.removeEventListener('fundamiga:desplazar-a-trabajador', handler);
+  }, []);
 
   return (
     <div className="min-h-screen bg-slate-50 relative overflow-hidden">

@@ -64,6 +64,48 @@ export default function AdminPage() {
 
   // Resumen por parqueadero
   const [mostrarResumen, setMostrarResumen] = useState(false);
+  const [resaltadoCedula, setResaltadoCedula] = useState<string | null>(null);
+
+  // Escuchar orden de desplazamiento de la IA hacia la fila en la tabla
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const custom = e as CustomEvent<{ cedula: string; nombre?: string }>;
+      const cedula = custom.detail?.cedula;
+      const nombre = custom.detail?.nombre;
+      if (!cedula && !nombre) return;
+
+      // Limpiar filtros del panel de administración
+      setBusqueda('');
+      setFiltroCargo('');
+
+      if (cedula) {
+        setResaltadoCedula(cedula);
+      }
+
+      setTimeout(() => {
+        let el: HTMLElement | null = null;
+        if (cedula) {
+          el = document.getElementById(`fila-admin-${cedula}`);
+        }
+        if (!el && nombre) {
+          el = document.querySelector(`[data-admin-nombre="${nombre}"]`);
+        }
+        if (el) {
+          el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          el.classList.remove('fila-resaltada-ia');
+          void el.offsetWidth;
+          el.classList.add('fila-resaltada-ia');
+        }
+      }, 150);
+
+      setTimeout(() => {
+        setResaltadoCedula(null);
+      }, 4000);
+    };
+
+    window.addEventListener('fundamiga:desplazar-a-trabajador', handler);
+    return () => window.removeEventListener('fundamiga:desplazar-a-trabajador', handler);
+  }, []);
 
   const formRef = useRef<HTMLDivElement>(null);
 
@@ -464,8 +506,20 @@ export default function AdminPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {personasFiltradas.map(p => (
-                        <tr key={p.id} className="border-b border-gray-50 hover:bg-emerald-50/30 transition-colors">
+                      {personasFiltradas.map(p => {
+                        const estaResaltado = resaltadoCedula && p.cedula === resaltadoCedula;
+                        return (
+                        <tr
+                          key={p.id}
+                          id={`fila-admin-${p.cedula}`}
+                          data-admin-cedula={p.cedula}
+                          data-admin-nombre={p.nombre}
+                          className={`border-b transition-all duration-300 ${
+                            estaResaltado
+                              ? 'fila-resaltada-ia bg-emerald-100/60 ring-2 ring-emerald-500'
+                              : 'border-gray-50 hover:bg-emerald-50/30'
+                          }`}
+                        >
                           <td className="px-5 py-4">
                             <p className="font-bold text-slate-800 text-sm">{p.nombre}</p>
                             <p className="text-[10px] text-slate-400 font-mono mt-0.5">C.C. {p.cedula || '—'}</p>
@@ -534,7 +588,8 @@ export default function AdminPage() {
                             </div>
                           </td>
                         </tr>
-                      ))}
+                      );
+                    })}
                     </tbody>
                   </table>
                 )}

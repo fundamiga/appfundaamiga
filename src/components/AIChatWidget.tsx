@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Sparkles, X, Send, Bot, User, ChevronDown, Check, Copy, Calculator, Shield, Users, HelpCircle, RefreshCw, Zap } from 'lucide-react';
+import { Sparkles, X, Send, Bot, User, ChevronDown, Check, Copy, Calculator, Shield, Users, HelpCircle, RefreshCw, Zap, MapPin } from 'lucide-react';
 import { processAIChatMessage, ChatMessage, ChatAction, executeUpdateTrabajador } from '@/lib/aiChatService';
 
 export default function AIChatWidget() {
@@ -73,6 +73,18 @@ export default function AIChatWidget() {
         acciones: responseObj.acciones
       };
       setMessages(prev => [...prev, assistantMsg]);
+
+      // Si la respuesta incluye ubicar en la tabla, auto-desplazar automáticamente
+      const accionDesplazar = responseObj.acciones?.find(a => a.tipo === 'DESPLAZAR_TABLA');
+      if (accionDesplazar?.payload) {
+        setTimeout(() => {
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('fundamiga:desplazar-a-trabajador', {
+              detail: accionDesplazar.payload
+            }));
+          }
+        }, 250);
+      }
     } catch {
       setMessages(prev => [
         ...prev,
@@ -92,6 +104,15 @@ export default function AIChatWidget() {
   const [accionesEjecutadas, setAccionesEjecutadas] = useState<string[]>([]);
 
   const handleExecuteAction = async (action: ChatAction, actIdx: number) => {
+    if (action.tipo === 'DESPLAZAR_TABLA' && action.payload) {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('fundamiga:desplazar-a-trabajador', {
+          detail: action.payload
+        }));
+      }
+      return;
+    }
+
     if (action.tipo === 'COPIAR' && action.payload) {
       try {
         await navigator.clipboard.writeText(action.payload);
@@ -298,6 +319,18 @@ export default function AIChatWidget() {
                                   <Zap size={14} className="fill-white" /> {act.label}
                                 </>
                               )}
+                            </button>
+                          );
+                        }
+
+                        if (act.tipo === 'DESPLAZAR_TABLA') {
+                          return (
+                            <button
+                              key={aIdx}
+                              onClick={() => handleExecuteAction(act, aIdx)}
+                              className="w-full py-1.5 px-3 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-xs bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:scale-98"
+                            >
+                              <MapPin size={13} /> {act.label}
                             </button>
                           );
                         }

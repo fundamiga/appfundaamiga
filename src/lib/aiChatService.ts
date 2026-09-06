@@ -8,9 +8,19 @@ export interface ChatAction {
   payload?: any;
 }
 
+export interface ChatContext {
+  ultimoTrabajador?: any;
+  campoPendiente?: {
+    campo: string;
+    campoLabel: string;
+    valorNuevo: any;
+  };
+}
+
 export interface ChatResponse {
   text: string;
   acciones?: ChatAction[];
+  nuevoContexto?: ChatContext;
 }
 
 export interface ChatMessage {
@@ -109,7 +119,7 @@ export async function executeUpdateTrabajador(payload: {
   }
 }
 
-export async function processAIChatMessage(message: string): Promise<ChatResponse> {
+export async function processAIChatMessage(message: string, context?: ChatContext): Promise<ChatResponse> {
   const cleanMsg = message.trim();
   if (!cleanMsg) return { text: 'Por favor escribe una consulta válida.' };
 
@@ -138,10 +148,10 @@ export async function processAIChatMessage(message: string): Promise<ChatRespons
   }
 
   // 2. Motor Inteligente Directo con Base de Datos Fundamiga
-  return await processFundamigaQuery(cleanMsg);
+  return await processFundamigaQuery(cleanMsg, context);
 }
 
-async function processFundamigaQuery(query: string): Promise<ChatResponse> {
+async function processFundamigaQuery(query: string, context?: ChatContext): Promise<ChatResponse> {
   let q = query
     .toLowerCase()
     .normalize('NFD')
@@ -152,13 +162,20 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
 
   // Corrección inteligente de dedazos y variaciones ortográficas frecuentes
   q = q
+    .replace(/\b(aparquederos?|parquaderos?|parquederos?|paqueaderos?|parqeaderos?)\b/g, 'parqueadero')
+    .replace(/\b(cuneta|cuetna|cuentaa|cunta|cueta)\b/g, 'cuenta')
+    .replace(/\b(cedulaa|celuda|cedla|cdeula|sedula)\b/g, 'cedula')
+    .replace(/\b(perdro)\b/g, 'pedro')
     .replace(/\b(quienen|quiene|quieness|kien|kienes|kienen)\b/g, 'quienes')
     .replace(/\b(perosnas|pesonas|personass|pesona|personad|perosna|persoas)\b/g, 'personas')
     .replace(/\b(trabajadore|trabajadorse|trabajadoers)\b/g, 'trabajadores')
     .replace(/\b(nominaa|nmina|monina|nomnia)\b/g, 'nomina')
     .replace(/\b(tabal|tbala|tavla)\b/g, 'tabla')
     .replace(/\b(cuadroo|cudaros?|cuadroa)\b/g, 'cuadro')
-    .replace(/\b(cuant[ao]ss?|cuantoa|cuntos|cuatas)\b/g, 'cuantos');
+    .replace(/\b(cuant[ao]ss?|cuantoa|cuntos|cuatas)\b/g, 'cuantos')
+    .replace(/\b5\s*-\s*6\b/g, '5 - 6')
+    .replace(/\b6\s*-\s*6\b/g, '6 - 6')
+    .replace(/\b2\s*-\s*10\b/g, '2 - 10');
 
   // ── 0. SALUDOS Y PRESENTACIÓN ───────────────────────────────────────────────
   const esSaludo = /^(hola|buenos\s*dias|buenas\s*tardes|buenas\s*noches|saludos|que\s*tal|buenas|hi|hello)\b/i.test(q);
@@ -214,44 +231,137 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
     q.includes('editar a') || q.includes('edita a') ||
     q.includes('modificar a') || q.includes('modifica a');
 
-  if (esIntentoModificar) {
+  if (esIntentoModificar || context?.campoPendiente) {
     const { data: todosTrabajadores } = await supabase.from('trabajadores').select('*');
     const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
 
     if (todosTrabajadores && todosTrabajadores.length > 0) {
-      // 1. Identificar al trabajador con tolerancia a orden de nombres y dedazos
-      let trabajadorEncontrado: any = null;
+      // 1. Extraer campo y nuevo valor solicitados en el mensaje actual
+      let campoDB = '';
+      let campoLabel = '';
+      let valorNuevo: any = null;
 
-      // Prioridad 1: Búsqueda por cédula si hay dígitos de 6 a 11 números en la consulta y corresponden a alguien existente
-      const cedulaEnQuery = q.match(/\b\d{6,11}\b/);
-      if (cedulaEnQuery) {
-        const porCedula = todosTrabajadores.find(t => String(t.cedula).trim() === cedulaEnQuery[0]);
-        // Solo si la query no dice explícitamente "cedula a 12345"
-        if (porCedula && !/cedula\s*(?:a|por|en|=)?\s*\d+/i.test(q)) {
-          trabajadorEncontrado = porCedula;
+      // Si había un campo pendiente esperando el nombre del trabajador
+      if (context?.campoPendiente) {
+        campoDB = context.campoPendiente.campo;
+        campoLabel = context.campoPendiente.campoLabel;
+        valorNuevo = context.campoPendiente.valorNuevo;
+      }
+
+      // A. Cédula
+      if (!campoDB && (q.includes('cedula') || q.includes('cc') || q.includes('documento') || q.includes('identificacion'))) {
+        const matchCedula = q.match(/(?:cedula|cc|documento|identificacion)(?:\s*(?:a|por|en|de|=|:))?\s*([0-9]{6,12})/i);
+        if (matchCedula) {
+          campoDB = 'cedula';
+          campoLabel = 'Número de Cédula';
+          valorNuevo = matchCedula[1];
         }
       }
 
-      // Prioridad 2: Coincidencia inteligente por nombre con tolerancia a dedazos (ej: perdro -> pedro)
-      if (!trabajadorEncontrado) {
-        // Extraer palabras de la consulta ignorando verbos y palabras de control
-        const palabrasControl = new Set([
-          'cambia', 'cambiar', 'cambiale', 'cambiales', 'cambiame', 'actualiza', 'actualizar',
-          'actualizale', 'actualizame', 'modifica', 'modificar', 'modificale', 'modificame',
-          'edita', 'editar', 'editale', 'editame', 'ponle', 'pon', 'poner', 'asigna', 'pasa',
-          'pasar', 'la', 'el', 'los', 'las', 'a', 'al', 'de', 'del', 'en', 'por', 'para',
-          'cuenta', 'cta', 'cuneta', 'cedula', 'cc', 'documento', 'banco', 'turno', 'tarifa',
-          'hora', 'extra', 'adicional', 'parqueadero', 'cargo', 'datos', 'etc', 'asi', 'un',
-          'una', 'su', 'nuevo', 'nueva', 'favor', 'dime', 'quiero', 'que'
-        ]);
+      // B. Banco / Forma de pago
+      if (!campoDB) {
+        const mapaBancos: Record<string, string> = {
+          'bancolombia': 'Bancolombia',
+          'nequi': 'Nequi',
+          'daviplata': 'Daviplata',
+          'davivienda': 'Davivienda',
+          'av villas': 'AV Villas',
+          'villas': 'AV Villas',
+          'bbva': 'BBVA',
+          'banco de bogota': 'Banco de Bogotá',
+          'bogota': 'Banco de Bogotá',
+          'popular': 'Banco Popular',
+          'caja social': 'Caja Social',
+          'efectivo': 'Efectivo',
+          'transferencia': 'Transferencia'
+        };
 
-        const tokensNombre = q.split(/\s+/).filter(w => w.length >= 3 && !palabrasControl.has(w));
+        const bancoEncontrado = Object.keys(mapaBancos).find(b => q.includes(b));
+        if (bancoEncontrado && (q.includes('banco') || q.includes('pago') || q.includes('forma') || q.includes('medio') || q.includes(`a ${bancoEncontrado}`) || q.includes(`por ${bancoEncontrado}`) || q.includes('cambia') || q.includes('cambiar'))) {
+          campoDB = 'forma_pago';
+          campoLabel = 'Forma de Pago';
+          valorNuevo = mapaBancos[bancoEncontrado];
+        }
+      }
 
+      // C. Número de Cuenta
+      if (!campoDB && (q.includes('cuenta') || q.includes('cta') || q.includes('cuneta') || q.includes('numero') || q.includes('no.') || q.includes('celular'))) {
+        const matchCuenta = q.match(/(?:cuenta|cta|cuneta|numero|no\.?|celular)(?:\s*(?:a|por|en|de|=|:))?\s*([0-9]{7,25})/i);
+        if (matchCuenta) {
+          campoDB = 'numero_cuenta';
+          campoLabel = 'Número de Cuenta';
+          valorNuevo = matchCuenta[1];
+        } else {
+          const nums = q.match(/\b([0-9]{7,25})\b/g) || [];
+          if (nums.length > 0) {
+            campoDB = 'numero_cuenta';
+            campoLabel = 'Número de Cuenta';
+            valorNuevo = nums[0];
+          }
+        }
+      }
+
+      // D. Valor Turno
+      if (!campoDB && (q.includes('turno') || q.includes('tarifa') || q.includes('sueldo') || q.includes('diario'))) {
+        const numMatch = q.match(/(?:\$|\b)([0-9]{2,3}(?:[.,][0-9]{3})+|[0-9]{5,6})\b/);
+        if (numMatch) {
+          campoDB = 'valor_turno';
+          campoLabel = 'Valor de Turno';
+          valorNuevo = parseInt(numMatch[1].replace(/[.,]/g, ''), 10);
+        }
+      }
+
+      // E. Valor Hora Adicional
+      if (!campoDB && (q.includes('hora') || q.includes('extra') || q.includes('adicional') || q.includes('recargo'))) {
+        const numMatch = q.match(/(?:\$|\b)([0-9]{1,2}(?:[.,][0-9]{3})+|[0-9]{4,5})\b/);
+        if (numMatch) {
+          campoDB = 'valor_hora_adicional';
+          campoLabel = 'Valor Hora Adicional';
+          valorNuevo = parseInt(numMatch[1].replace(/[.,]/g, ''), 10);
+        }
+      }
+
+      // F. Parqueadero / Cargo (soporta "cambia aparquedero a guabinas", "pasa a guabinas", etc.)
+      if (!campoDB) {
+        const cargosDisponibles = [
+          'CONTRATISTAS DE ADMINISTRACION', '5 - 6', '6 - 6', 'CARTON C', 'GUACANDA',
+          'TERCERA', 'ROZO', '2 - 10', 'MAYORISTA', 'GUABINAS', 'BOLIVAR', 'REMESAS'
+        ];
+        const cargoMatch = cargosDisponibles.find(c => q.includes(c.toLowerCase()));
+        if (cargoMatch) {
+          campoDB = 'cargo';
+          campoLabel = 'Parqueadero / Cargo';
+          valorNuevo = cargoMatch;
+        }
+      }
+
+      // 2. Identificar al trabajador
+      let trabajadorEncontrado: any = null;
+
+      // Extraer palabras de la consulta ignorando verbos, palabras de control, cargos y bancos
+      const palabrasControl = new Set([
+        'cambia', 'cambiar', 'cambiale', 'cambiales', 'cambiame', 'actualiza', 'actualizar',
+        'actualizale', 'actualizame', 'modifica', 'modificar', 'modificale', 'modificame',
+        'edita', 'editar', 'editale', 'editame', 'ponle', 'pon', 'poner', 'asigna', 'asignale',
+        'pasa', 'pasar', 'pasale', 'la', 'el', 'los', 'las', 'a', 'al', 'de', 'del', 'en', 'por', 'para',
+        'cuenta', 'cta', 'cuneta', 'cedula', 'cc', 'documento', 'banco', 'turno', 'tarifa',
+        'hora', 'extra', 'adicional', 'parqueadero', 'cargo', 'datos', 'etc', 'asi', 'un',
+        'una', 'su', 'nuevo', 'nueva', 'favor', 'dime', 'quiero', 'que',
+        // Cargos y parqueaderos
+        'guabinas', 'mayorista', 'carton', 'guacanda', 'tercera', 'rozo', 'bolivar', 'remesas',
+        'administracion', 'contratistas',
+        // Bancos
+        'bancolombia', 'nequi', 'daviplata', 'davivienda', 'villas', 'bbva', 'bogota', 'popular', 'social', 'efectivo', 'transferencia'
+      ]);
+
+      const tokensNombre = q.split(/\s+/).filter(w => w.length >= 3 && !palabrasControl.has(w) && !/^\d+$/.test(w));
+
+      if (tokensNombre.length > 0) {
         const candidatos = todosTrabajadores.map(t => {
           const tNorm = t.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
           let score = 0;
 
-          if (tokensNombre.length > 0 && tokensNombre.every(tk => tNorm.includes(tk))) {
+          if (tokensNombre.every(tk => tNorm.includes(tk))) {
             score = 100 + tokensNombre.length * 10;
           } else {
             const palabrasTrabajador = tNorm.split(/\s+/).filter((w: string) => w.length >= 3);
@@ -281,123 +391,64 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
           return { t, score };
         }).filter(c => c.score > 0).sort((a, b) => b.score - a.score);
 
-        if (candidatos.length === 1) {
-          trabajadorEncontrado = candidatos[0].t;
-        } else if (candidatos.length > 1 && candidatos[0].score > candidatos[1].score) {
-          trabajadorEncontrado = candidatos[0].t;
-        } else if (candidatos.length > 1 && candidatos[0].score === candidatos[1].score && candidatos[0].score >= 20) {
+        if (candidatos.length > 0 && candidatos[0].score >= 15) {
           trabajadorEncontrado = candidatos[0].t;
         }
       }
 
+      // Prioridad por cédula si no se encontró por nombre
+      if (!trabajadorEncontrado) {
+        const cedulaEnQuery = q.match(/\b\d{6,11}\b/);
+        if (cedulaEnQuery && campoDB !== 'cedula') {
+          trabajadorEncontrado = todosTrabajadores.find(t => String(t.cedula).trim() === cedulaEnQuery[0]);
+        }
+      }
+
+      // Prioridad por memoria de contexto: si el usuario no dijo el nombre pero venía hablando de alguien
+      if (!trabajadorEncontrado && context?.ultimoTrabajador) {
+        trabajadorEncontrado = todosTrabajadores.find(t =>
+          String(t.cedula).trim() === String(context.ultimoTrabajador.cedula).trim() ||
+          t.id === context.ultimoTrabajador.id
+        ) || context.ultimoTrabajador;
+      }
+
+      // CASO A: Si no hay trabajador identificado pero sí se indicó un campo/valor a cambiar
+      // (Ej: "cambia aparquedero a guabinas" sin contexto previo)
+      if (!trabajadorEncontrado) {
+        if (campoDB && valorNuevo !== null) {
+          let promptQuien = '';
+          if (campoDB === 'cargo') {
+            promptQuien = `🏢 Entendí que deseas cambiar el parqueadero a **${valorNuevo}**.\n\n¿A qué persona o trabajador deseas pasarlo a **${valorNuevo}**? (Ej: escribe *"a Donella"*, *"a Carlos"*, o *"pasa a Diana a ${valorNuevo}"*).`;
+          } else if (campoDB === 'numero_cuenta') {
+            promptQuien = `💳 Entendí que deseas registrar la cuenta **\`${valorNuevo}\`**.\n\n¿A qué trabajador le asigno este número de cuenta? (Ej: *"a Juan Pedro"*, *"a Donella"*...).`;
+          } else if (campoDB === 'forma_pago') {
+            promptQuien = `🏦 Entendí que deseas cambiar la forma de pago a **${valorNuevo}**.\n\n¿A qué trabajador deseas asignarle **${valorNuevo}**? (Ej: *"a Carlos"*, *"a Donella"*...).`;
+          } else if (campoDB === 'valor_turno') {
+            promptQuien = `💰 Entendí que deseas actualizar la tarifa de turno a **${fmt(valorNuevo)}**.\n\n¿A qué trabajador deseas aplicársela?`;
+          } else if (campoDB === 'cedula') {
+            promptQuien = `🆔 Entendí que deseas registrar la cédula **\`${valorNuevo}\`**.\n\n¿A qué trabajador pertenece?`;
+          }
+
+          if (promptQuien) {
+            return {
+              text: promptQuien,
+              nuevoContexto: {
+                campoPendiente: {
+                  campo: campoDB,
+                  campoLabel: campoLabel,
+                  valorNuevo: valorNuevo
+                }
+              }
+            };
+          }
+        }
+      }
+
+      // CASO B: Trabajador identificado
       if (trabajadorEncontrado) {
-        // Verificar si la persona está actualmente en el cuadro de nómina
         const enNomina = (historial || []).find(h => String(h.persona?.cedula || '').trim() === String(trabajadorEncontrado.cedula).trim());
 
-        // 2. Identificar el campo y el nuevo valor
-        let campoDB = '';
-        let campoLabel = '';
-        let valorNuevo: any = null;
-
-        // A. Cédula
-        if (q.includes('cedula') || q.includes('cc') || q.includes('documento') || q.includes('identificacion')) {
-          const matchCedula = q.match(/(?:cedula|cc|documento|identificacion)(?:\s*(?:a|por|en|de|=|:))?\s*([0-9]{6,12})/i);
-          if (matchCedula) {
-            campoDB = 'cedula';
-            campoLabel = 'Número de Cédula';
-            valorNuevo = matchCedula[1];
-          } else {
-            const nums = q.match(/\b([0-9]{6,12})\b/g) || [];
-            const nuevaCed = nums.find(n => n !== trabajadorEncontrado.cedula);
-            if (nuevaCed) {
-              campoDB = 'cedula';
-              campoLabel = 'Número de Cédula';
-              valorNuevo = nuevaCed;
-            }
-          }
-        }
-
-        // B. Banco / Forma de pago
-        if (!campoDB) {
-          const mapaBancos: Record<string, string> = {
-            'bancolombia': 'Bancolombia',
-            'nequi': 'Nequi',
-            'daviplata': 'Daviplata',
-            'davivienda': 'Davivienda',
-            'av villas': 'AV Villas',
-            'villas': 'AV Villas',
-            'bbva': 'BBVA',
-            'banco de bogota': 'Banco de Bogotá',
-            'bogota': 'Banco de Bogotá',
-            'popular': 'Banco Popular',
-            'caja social': 'Caja Social',
-            'efectivo': 'Efectivo',
-            'transferencia': 'Transferencia'
-          };
-
-          const bancoEncontrado = Object.keys(mapaBancos).find(b => q.includes(b));
-          if (bancoEncontrado && (q.includes('banco') || q.includes('pago') || q.includes('forma') || q.includes('medio') || q.includes(`a ${bancoEncontrado}`) || q.includes(`por ${bancoEncontrado}`))) {
-            campoDB = 'forma_pago';
-            campoLabel = 'Forma de Pago';
-            valorNuevo = mapaBancos[bancoEncontrado];
-          }
-        }
-
-        // C. Número de Cuenta
-        if (!campoDB && (q.includes('cuenta') || q.includes('cta') || q.includes('cuneta') || q.includes('numero') || q.includes('no.') || q.includes('celular'))) {
-          const matchCuenta = q.match(/(?:cuenta|cta|cuneta|numero|no\.?|celular)(?:\s*(?:a|por|en|de|=|:))?\s*([0-9]{7,25})/i);
-          if (matchCuenta) {
-            campoDB = 'numero_cuenta';
-            campoLabel = 'Número de Cuenta';
-            valorNuevo = matchCuenta[1];
-          } else {
-            const nums = q.match(/\b([0-9]{7,25})\b/g) || [];
-            const cuentaCandidata = nums.find(n => n !== trabajadorEncontrado.cedula);
-            if (cuentaCandidata) {
-              campoDB = 'numero_cuenta';
-              campoLabel = 'Número de Cuenta';
-              valorNuevo = cuentaCandidata;
-            }
-          }
-        }
-
-        // D. Valor Turno
-        if (!campoDB && (q.includes('turno') || q.includes('tarifa') || q.includes('sueldo') || q.includes('diario'))) {
-          const numMatch = q.match(/(?:\$|\b)([0-9]{2,3}(?:[.,][0-9]{3})+|[0-9]{5,6})\b/);
-          if (numMatch) {
-            campoDB = 'valor_turno';
-            campoLabel = 'Valor de Turno';
-            valorNuevo = parseInt(numMatch[1].replace(/[.,]/g, ''), 10);
-          }
-        }
-
-        // E. Valor Hora Adicional
-        if (!campoDB && (q.includes('hora') || q.includes('extra') || q.includes('adicional') || q.includes('recargo'))) {
-          const numMatch = q.match(/(?:\$|\b)([0-9]{1,2}(?:[.,][0-9]{3})+|[0-9]{4,5})\b/);
-          if (numMatch) {
-            campoDB = 'valor_hora_adicional';
-            campoLabel = 'Valor Hora Adicional';
-            valorNuevo = parseInt(numMatch[1].replace(/[.,]/g, ''), 10);
-          }
-        }
-
-        // F. Parqueadero / Cargo
-        if (!campoDB) {
-          const cargosDisponibles = [
-            'CONTRATISTAS DE ADMINISTRACION', '5 - 6', '6 - 6', 'CARTON C', 'GUACANDA',
-            'TERCERA', 'ROZO', '2 - 10', 'MAYORISTA', 'GUABINAS', 'BOLIVAR', 'REMESAS'
-          ];
-          if (q.includes('parqueadero') || q.includes('cargo') || q.includes('lugar') || q.includes('pasa') || q.includes('pasar') || q.includes('asigna') || q.includes('asignar')) {
-            const cargoMatch = cargosDisponibles.find(c => q.includes(c.toLowerCase()));
-            if (cargoMatch) {
-              campoDB = 'cargo';
-              campoLabel = 'Parqueadero / Cargo';
-              valorNuevo = cargoMatch;
-            }
-          }
-        }
-
-        // CASO 1: Se especificó campo y nuevo valor
+        // B.1 Se especificó campo y nuevo valor
         if (campoDB && valorNuevo !== null) {
           if (trabajadorEncontrado[campoDB] === valorNuevo) {
             const valorActualFmt = typeof valorNuevo === 'number' ? fmt(valorNuevo) : `\`${valorNuevo}\``;
@@ -412,7 +463,11 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
                     nombre: trabajadorEncontrado.nombre
                   }
                 }
-              ]
+              ],
+              nuevoContexto: {
+                ultimoTrabajador: trabajadorEncontrado,
+                campoPendiente: undefined
+              }
             };
           }
 
@@ -459,12 +514,15 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
                   nombre: trabajadorEncontrado.nombre
                 }
               }
-            ]
+            ],
+            nuevoContexto: {
+              ultimoTrabajador: trabajadorEncontrado,
+              campoPendiente: undefined
+            }
           };
         }
 
-        // CASO 2: Se identificó a la persona pero no el campo/valor exacto (ej: "modifica los datos de Donella")
-        // Desplazamos a la persona, abrimos el editor en la tabla y le damos opciones claras
+        // B.2 Se identificó al trabajador pero no el campo a cambiar
         const turnos = enNomina ? (enNomina.form?.diasTurno || 0) : 0;
         const neto = enNomina ? (enNomina.resultado?.neto || 0) : 0;
         const estadoIcon = enNomina ? (enNomina.estado === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente') : '';
@@ -501,7 +559,11 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
                 nombre: trabajadorEncontrado.nombre
               }
             }
-          ]
+          ],
+          nuevoContexto: {
+            ultimoTrabajador: trabajadorEncontrado,
+            campoPendiente: undefined
+          }
         };
       }
     }
@@ -588,7 +650,19 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
                 nombre: enNomina.persona?.nombre
               }
             }
-          ]
+          ],
+          nuevoContexto: {
+            ultimoTrabajador: (trabajadores || []).find(t => String(t.cedula).trim() === String(enNomina.persona?.cedula || '').trim()) || {
+              nombre: enNomina.persona?.nombre,
+              cedula: enNomina.persona?.cedula,
+              cargo: enNomina.persona?.cargo,
+              forma_pago: enNomina.persona?.formaPago,
+              numero_cuenta: enNomina.persona?.numeroCuenta,
+              valor_turno: enNomina.persona?.valorTurno,
+              valor_hora_adicional: enNomina.persona?.valorHoraAdicional
+            },
+            campoPendiente: undefined
+          }
         };
       }
 
@@ -604,7 +678,11 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
             `• 🏢 **Parqueadero / Cargo**: ${enTrabajadores.cargo || 'No asignado'}\n` +
             `• 💰 **Valor de Turno registrado**: ${fmt(enTrabajadores.valor_turno || 0)}\n` +
             `• 💳 **Forma de Pago**: ${enTrabajadores.forma_pago || 'No definida'}\n\n` +
-            `💡 *Puedes liquidarlo seleccionándolo en el formulario de la pantalla.*`
+            `💡 *Puedes liquidarlo seleccionándolo en el formulario de la pantalla.*`,
+          nuevoContexto: {
+            ultimoTrabajador: enTrabajadores,
+            campoPendiente: undefined
+          }
         };
       }
 
@@ -1067,7 +1145,11 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
 
       return {
         text: respuesta.trim(),
-        acciones: accionesList
+        acciones: accionesList,
+        nuevoContexto: {
+          ultimoTrabajador: resultados[0],
+          campoPendiente: undefined
+        }
       };
     }
   }

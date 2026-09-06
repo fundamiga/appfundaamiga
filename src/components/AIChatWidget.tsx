@@ -2,12 +2,13 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Sparkles, X, Send, Bot, User, ChevronDown, Check, Copy, Calculator, Shield, Users, HelpCircle, RefreshCw, Zap, MapPin, Pencil } from 'lucide-react';
-import { processAIChatMessage, ChatMessage, ChatAction, executeUpdateTrabajador } from '@/lib/aiChatService';
+import { processAIChatMessage, ChatMessage, ChatAction, executeUpdateTrabajador, ChatContext } from '@/lib/aiChatService';
 
 export default function AIChatWidget() {
   const [isOpen, setIsOpen] = useState(false);
   const [showTooltip, setShowTooltip] = useState(false);
   const [copiadoIdx, setCopiadoIdx] = useState<string | null>(null);
+  const [chatContext, setChatContext] = useState<ChatContext>({});
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: 'welcome',
@@ -64,7 +65,15 @@ export default function AIChatWidget() {
     setIsTyping(true);
 
     try {
-      const responseObj = await processAIChatMessage(query);
+      const responseObj = await processAIChatMessage(query, chatContext);
+
+      if (responseObj.nuevoContexto) {
+        setChatContext(prev => ({
+          ...prev,
+          ...responseObj.nuevoContexto
+        }));
+      }
+
       const assistantMsg: ChatMessage = {
         id: (Date.now() + 1).toString(),
         sender: 'assistant',
@@ -162,6 +171,7 @@ export default function AIChatWidget() {
       try {
         const res = await executeUpdateTrabajador(action.payload);
         setAccionesEjecutadas(prev => [...prev, actionKey]);
+        setChatContext(prev => ({ ...prev, campoPendiente: undefined }));
 
         const confirmationMsg: ChatMessage = {
           id: (Date.now() + 2).toString(),

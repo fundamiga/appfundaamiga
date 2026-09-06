@@ -4,7 +4,7 @@ import { calcularDescuentoARLPila } from '@/utils/calcularDescuentoARL';
 
 export interface ChatAction {
   label: string;
-  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO' | 'DESPLAZAR_TABLA' | 'EDITAR_EN_TABLA' | 'LIQUIDAR_TRABAJADOR' | 'PAGO_MASIVO' | 'APLICAR_FILTROS' | 'CREAR_TRABAJADOR' | 'NAVEGAR_RUTA';
+  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO' | 'DESPLAZAR_TABLA' | 'EDITAR_EN_TABLA' | 'LIQUIDAR_TRABAJADOR' | 'PAGO_MASIVO' | 'APLICAR_FILTROS' | 'CREAR_TRABAJADOR' | 'ELIMINAR_DE_NOMINA' | 'NAVEGAR_RUTA';
   payload?: any;
 }
 
@@ -17,6 +17,11 @@ export interface ChatContext {
   };
   liquidandoPendiente?: {
     trabajador: any;
+  };
+  eliminandoPendiente?: {
+    historialId: string;
+    nombre: string;
+    cedula?: string;
   };
 }
 
@@ -351,6 +356,43 @@ export async function executeCrearTrabajador(payload: {
   }
 }
 
+export async function executeEliminarDeNomina(payload: {
+  historialId: string;
+  nombre: string;
+  cedula?: string;
+}): Promise<{ success: boolean; message: string }> {
+  try {
+    const { error } = await supabase
+      .from('historial_liquidaciones')
+      .delete()
+      .eq('id', payload.historialId);
+
+    if (error) {
+      return {
+        success: false,
+        message: `❌ Error al eliminar de la nómina en Supabase: ${error.message}`
+      };
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('fundamiga:recargar-datos'));
+    }
+
+    return {
+      success: true,
+      message: `🗑️ **¡${payload.nombre} ha sido eliminado(a) de la tabla de nómina con éxito!**\n\n` +
+        `• 👤 **Trabajador**: ${payload.nombre}\n` +
+        (payload.cedula ? `• 🆔 **Cédula**: \`${payload.cedula}\`\n` : '') +
+        `• 🔄 *El cuadro de nómina y los totales se han recalculado automáticamente.*`
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      message: `❌ Error inesperado al eliminar: ${err?.message || 'Error de conexión'}`
+    };
+  }
+}
+
 export async function processAIChatMessage(message: string, context?: ChatContext): Promise<ChatResponse> {
   const cleanMsg = message.trim();
   if (!cleanMsg) return { text: 'Por favor escribe una consulta válida.' };
@@ -519,6 +561,170 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
           payload: '/admin'
         }
       ]
+    };
+  }
+
+  // ── 0.00 ELIMINAR TRABAJADOR DE LA TABLA DE NÓMINA (HISTORIAL) ───────────
+  const verbosEliminar = /\b(elimina|eliminar|eliminame|borra|borrar|borrame|quita|quitar|quitame|saca|sacar|sacame)\b/i;
+  const esIntentoEliminar = !q.includes('filtro') && (
+    (verbosEliminar.test(q) && (
+      q.includes('tabla') ||
+      q.includes('cuadro') ||
+      q.includes('nomina') ||
+      q.includes('persona') ||
+      q.includes('trabajador') ||
+      q.includes('fila') ||
+      q.includes('esa persona') ||
+      q.includes('este trabajador') ||
+      q.includes('eliminalo') ||
+      q.includes('eliminala') ||
+      q.includes('borralo') ||
+      q.includes('borrala') ||
+      q.includes('quitalo') ||
+      q.includes('quitala') ||
+      q.includes('sacalo') ||
+      q.includes('sacala') ||
+      Boolean(context?.ultimoTrabajador)
+    )) ||
+    q.includes('elimina esa persona') ||
+    q.includes('borra esa persona') ||
+    q.includes('quita esa persona') ||
+    q.includes('saca esa persona') ||
+    q.includes('eliminar persona')
+  );
+
+  if (esIntentoEliminar) {
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+    const { data: todosTrabajadores } = await supabase.from('trabajadores').select('*');
+
+    const palabrasControlEliminar = new Set([
+      'elimina', 'eliminar', 'eliminame', 'borra', 'borrar', 'borrame', 'quita', 'quitar', 'quitame',
+      'saca', 'sacar', 'sacame', 'a', 'al', 'de', 'del', 'la', 'el', 'los', 'las', 'esa', 'ese',
+      'este', 'esta', 'persona', 'trabajador', 'empleado', 'fila', 'tabla', 'cuadro', 'nomina',
+      'porfa', 'favor', 'tambien', 'en'
+    ]);
+
+    const tokensNombre = q.split(/\s+/).filter(w => w.length >= 3 && !palabrasControlEliminar.has(w) && !/^\d+$/.test(w));
+    const matchCedula = q.match(/\b([0-9]{6,12})\b/);
+    const cedulaBusqueda = matchCedula ? matchCedula[1] : null;
+
+    let rowEncontrada: any = null;
+
+    if (cedulaBusqueda) {
+      rowEncontrada = (historial || []).find(h => String(h.persona?.cedula || '').trim() === cedulaBusqueda);
+    }
+
+    if (!rowEncontrada && tokensNombre.length > 0) {
+      let mejorScore = 0;
+      for (const h of (historial || [])) {
+        const nom = String(h.persona?.nombre || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        let score = 0;
+        if (tokensNombre.every(tk => nom.includes(tk))) {
+          score = 100 + tokensNombre.length * 10;
+        } else {
+          for (const tk of tokensNombre) {
+            if (nom.includes(tk)) score += 20;
+          }
+        }
+        if (score > mejorScore && score >= 20) {
+          mejorScore = score;
+          rowEncontrada = h;
+        }
+      }
+    }
+
+    // Si no encontró por tokens o no se ingresó nombre específico, recurrir a context?.ultimoTrabajador
+    if (!rowEncontrada && context?.ultimoTrabajador) {
+      const cedCtx = String(context.ultimoTrabajador.cedula || '').trim();
+      const nomCtx = String(context.ultimoTrabajador.nombre || '').toLowerCase().trim();
+      rowEncontrada = (historial || []).find(h => 
+        (cedCtx && String(h.persona?.cedula || '').trim() === cedCtx) ||
+        (nomCtx && String(h.persona?.nombre || '').toLowerCase().trim() === nomCtx)
+      );
+    }
+
+    if (rowEncontrada) {
+      const nombre = rowEncontrada.persona?.nombre || 'Trabajador';
+      const cedula = rowEncontrada.persona?.cedula || '';
+      const cargo = rowEncontrada.persona?.cargo || 'General';
+      const turnos = rowEncontrada.form?.turnos || 0;
+      const neto = rowEncontrada.resultado?.neto || 0;
+      const estado = rowEncontrada.estado || 'Pendiente';
+
+      return {
+        text: `⚠️ **Confirmación para retirar del cuadro de nómina**:\n\n` +
+          `• 👤 **Trabajador**: **${nombre}**\n` +
+          (cedula ? `• 🆔 **Cédula**: \`${cedula}\`\n` : '') +
+          `• 🏢 **Parqueadero / Cargo**: ${cargo}\n` +
+          `• 📊 **Registro actual en tabla**: ${turnos} turnos → **${fmt(neto)}** (${estado === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente'})\n\n` +
+          `¿Deseas eliminar a este trabajador del cuadro activo de nómina?\n` +
+          `*(Nota: Su ficha de registro en la base de datos de Trabajadores permanecerá intacta)*.`,
+        acciones: [
+          {
+            label: `🗑️ Confirmar eliminación de ${nombre.split(' ')[0]} de la tabla`,
+            tipo: 'ELIMINAR_DE_NOMINA',
+            payload: {
+              historialId: rowEncontrada.id,
+              nombre,
+              cedula
+            }
+          },
+          {
+            label: `📍 Ubicar a ${nombre.split(' ')[0]} en la tabla`,
+            tipo: 'DESPLAZAR_TABLA',
+            payload: { cedula, nombre }
+          }
+        ],
+        nuevoContexto: {
+          ...context,
+          ultimoTrabajador: rowEncontrada.persona || context?.ultimoTrabajador,
+          eliminandoPendiente: {
+            historialId: rowEncontrada.id,
+            nombre,
+            cedula
+          }
+        }
+      };
+    }
+
+    // Si no está en el historial pero sí en la base de datos de trabajadores
+    let trabajadorEnBD: any = null;
+    if (cedulaBusqueda) {
+      trabajadorEnBD = (todosTrabajadores || []).find(t => String(t.cedula).trim() === cedulaBusqueda);
+    }
+    if (!trabajadorEnBD && tokensNombre.length > 0) {
+      trabajadorEnBD = (todosTrabajadores || []).find(t => {
+        const tNorm = t.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+        return tokensNombre.every(tk => tNorm.includes(tk));
+      });
+    }
+
+    if (trabajadorEnBD) {
+      return {
+        text: `ℹ️ **${trabajadorEnBD.nombre}** está registrado en la base de datos general de trabajadores, pero **actualmente NO se encuentra en la tabla de nómina activa** (no tiene turnos cargados en este momento).\n\n` +
+          `• Si deseas agregarlo y liquidarlo en la tabla, puedes pedirme por ejemplo:\n` +
+          `  *"Liquida a ${trabajadorEnBD.nombre.split(' ')[0]} con 15 turnos"*\n` +
+          `• Si deseas darlo de baja permanente de toda la empresa, puedes gestionarlo desde el panel de administración.`,
+        acciones: [
+          {
+            label: `🌐 Ir al panel de trabajadores (/admin)`,
+            tipo: 'NAVEGAR_RUTA',
+            payload: '/admin'
+          }
+        ],
+        nuevoContexto: {
+          ...context,
+          ultimoTrabajador: trabajadorEnBD
+        }
+      };
+    }
+
+    return {
+      text: `🤖 No encontré al trabajador que deseas eliminar en el cuadro de nómina.\n\n` +
+        `Por favor indícame su nombre o cédula, por ejemplo:\n` +
+        `• *"Elimina a Carlos Mario de la tabla"*\n` +
+        `• *"Borra la fila de Diana Arias del cuadro"*\n` +
+        `• *"Elimina al trabajador con cédula 1005"*`
     };
   }
 

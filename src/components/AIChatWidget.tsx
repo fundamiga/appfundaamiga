@@ -1,8 +1,8 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Sparkles, X, Send, Bot, User, ChevronDown, Check, Copy, Calculator, Shield, Users, HelpCircle, RefreshCw, Zap, MapPin, Pencil } from 'lucide-react';
-import { processAIChatMessage, ChatMessage, ChatAction, executeUpdateTrabajador, executeLiquidacionDirecta, executePagoMasivo, executeCrearTrabajador, ChatContext } from '@/lib/aiChatService';
+import { Sparkles, X, Send, Bot, User, ChevronDown, Check, Copy, Calculator, Shield, Users, HelpCircle, RefreshCw, Zap, MapPin, Pencil, Trash2 } from 'lucide-react';
+import { processAIChatMessage, ChatMessage, ChatAction, executeUpdateTrabajador, executeLiquidacionDirecta, executePagoMasivo, executeCrearTrabajador, executeEliminarDeNomina, ChatContext } from '@/lib/aiChatService';
 
 export default function AIChatWidget() {
   const [isOpen, setIsOpen] = useState(false);
@@ -298,6 +298,41 @@ export default function AIChatWidget() {
       return;
     }
 
+    if (action.tipo === 'ELIMINAR_DE_NOMINA' && action.payload) {
+      const actionKey = `del-${actIdx}-${action.payload.historialId}`;
+      if (accionesEjecutadas.includes(actionKey) || ejecutandoAccionId === actionKey) return;
+
+      setEjecutandoAccionId(actionKey);
+      try {
+        const res = await executeEliminarDeNomina(action.payload);
+        setAccionesEjecutadas(prev => [...prev, actionKey]);
+        setChatContext(prev => ({ ...prev, eliminandoPendiente: undefined }));
+
+        const confirmationMsg: ChatMessage = {
+          id: (Date.now() + 2).toString(),
+          sender: 'assistant',
+          text: res.message,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, confirmationMsg]);
+
+        if (res.success && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('fundamiga:recargar-datos'));
+        }
+      } catch (err: any) {
+        const errorMsg: ChatMessage = {
+          id: (Date.now() + 2).toString(),
+          sender: 'assistant',
+          text: `❌ Error al eliminar de la nómina: ${err?.message || 'Error inesperado'}`,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, errorMsg]);
+      } finally {
+        setEjecutandoAccionId(null);
+      }
+      return;
+    }
+
     if (action.tipo === 'MODIFICAR_DATO' && action.payload) {
       const actionKey = `${actIdx}-${action.payload.trabajadorId}-${action.payload.campo}`;
       if (accionesEjecutadas.includes(actionKey) || ejecutandoAccionId === actionKey) return;
@@ -509,6 +544,41 @@ export default function AIChatWidget() {
                               className="w-full py-1.5 px-3 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-xs bg-amber-500 hover:bg-amber-600 text-white cursor-pointer active:scale-98"
                             >
                               <Pencil size={13} /> {act.label}
+                            </button>
+                          );
+                        }
+
+                        if (act.tipo === 'ELIMINAR_DE_NOMINA' && act.payload) {
+                          const actionKey = `del-${aIdx}-${act.payload?.historialId}`;
+                          const isDeleting = ejecutandoAccionId === actionKey;
+                          const isDeleted = accionesEjecutadas.includes(actionKey);
+
+                          return (
+                            <button
+                              key={aIdx}
+                              onClick={() => handleExecuteAction(act, aIdx)}
+                              disabled={isDeleting || isDeleted}
+                              className={`w-full py-2 px-3 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-xs ${
+                                isDeleted
+                                  ? 'bg-slate-500 text-white cursor-default'
+                                  : isDeleting
+                                  ? 'bg-rose-100 text-rose-900 cursor-wait'
+                                  : 'bg-rose-600 hover:bg-rose-700 active:scale-98 text-white shadow-sm cursor-pointer'
+                              }`}
+                            >
+                              {isDeleted ? (
+                                <>
+                                  <Check size={14} /> Eliminado de la nómina
+                                </>
+                              ) : isDeleting ? (
+                                <>
+                                  <RefreshCw size={14} className="animate-spin" /> Eliminando de nómina...
+                                </>
+                              ) : (
+                                <>
+                                  <Trash2 size={14} /> {act.label}
+                                </>
+                              )}
                             </button>
                           );
                         }

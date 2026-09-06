@@ -15,6 +15,9 @@ export interface ChatContext {
     campoLabel: string;
     valorNuevo: any;
   };
+  liquidandoPendiente?: {
+    trabajador: any;
+  };
 }
 
 export interface ChatResponse {
@@ -422,10 +425,12 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
   }
 
   // ── -0.1 CREAR / AGREGAR NUEVO TRABAJADOR A LA BASE DE DATOS ───────────────
-  const esIntentoCrearTrabajador =
+  const esParaNomina = q.includes('nomina') || q.includes('cuadro') || q.includes('tabla') || q.includes('liquidar') || Boolean(context?.liquidandoPendiente);
+  const esIntentoCrearTrabajador = !esParaNomina && (
     /\b(agrega|agregar|crea|crear|registra|registrar|anade|anadir|inserta|insertar)\b.*?\b(nuevo\s*(?:trabajador|empleado|persona)|trabajador\s*nuevo)\b/i.test(q) ||
-    /\b(nuevo\s*(?:trabajador|empleado|persona)|crear\s*(?:un\s*)?trabajador|agregar\s*(?:un\s*)?trabajador|registrar\s*(?:un\s*)?trabajador)\b/i.test(q) ||
-    (q.includes('nuevo trabajador') || q.includes('agregar trabajador') || q.includes('crear trabajador') || q.includes('nuevo empleado'));
+    /\b(nuevo\s*(?:trabajador|empleado|persona)|crear\s*(?:un\s*)?trabajador|registrar\s*(?:un\s*)?trabajador)\b/i.test(q) ||
+    (q.includes('nuevo trabajador') || q.includes('crear trabajador') || q.includes('nuevo empleado'))
+  );
 
   if (esIntentoCrearTrabajador) {
     // Verificar si proporcionó detalles para crearlo directamente
@@ -517,58 +522,93 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     };
   }
 
-  // ── 0.0 LIQUIDACIÓN DIRECTA DESDE EL CHAT ───────────────────────────────────
+  // ── 0.0 LIQUIDACIÓN Y REGISTRO EN LA NÓMINA EN VIVO ─────────────────────────
   const verbosLiquidar = /\b(liquida|liquidale|ingresa|ingresale|calcula|calculale|mete|metele|agrega|agregale)\b/i;
-  const tienePalabraLiquidacion = verbosLiquidar.test(q) && (/\b(\d+)\s*(?:dias?|turnos?)\b/.test(q) || /\bcon\s*(\d+)\s*(?:dias?|turnos?)\b/.test(q) || /\b(\d+)\s*y\s*(\d+)\b/.test(q));
+  const esIntentoNomina =
+    Boolean(context?.liquidandoPendiente) ||
+    (verbosLiquidar.test(q) && (q.includes('nomina') || q.includes('cuadro') || q.includes('tabla') || /\b(\d+)\s*(?:dias?|turnos?)\b/.test(q) || /\bcon\s*(\d+)\s*(?:dias?|turnos?)\b/.test(q))) ||
+    (q.includes('a la nomina') || q.includes('al cuadro') || q.includes('a la tabla') || q.includes('en la nomina') || q.includes('en el cuadro') || q.includes('en la tabla') || q.includes('agregar trabajador') || q.includes('agregar trabajadores') || q.includes('ingresar trabajador') || q.includes('ingresar trabajadores'));
 
-  if (tienePalabraLiquidacion) {
+  if (esIntentoNomina) {
     const { data: todosTrabajadores } = await supabase.from('trabajadores').select('*');
     const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
 
     if (todosTrabajadores && todosTrabajadores.length > 0) {
-      // Extraer días turno
+      // 1. Extraer días de turno
       let diasTurno = 0;
-      const matchTurnos = q.match(/\b(\d+)\s*(?:dias?|turnos?)\b/) || q.match(/\b(?:con|de)\s*(\d+)\s*(?:turnos?|dias?)\b/);
+      const matchTurnos =
+        q.match(/\b(\d+)\s*(?:dias?|turnos?)\b/) ||
+        q.match(/\b(?:con|de)\s*(\d+)\s*(?:turnos?|dias?)\b/) ||
+        q.match(/^\s*(\d+)\s*(?:turnos?|dias?)?\s*$/);
       if (matchTurnos) diasTurno = parseInt(matchTurnos[1], 10);
 
-      // Extraer horas adicionales
+      // 2. Extraer horas adicionales
       let horasAdicionales = 0;
       const matchHoras = q.match(/\b(\d+)\s*(?:horas?|extras?|adicionales?)\b/);
       if (matchHoras) horasAdicionales = parseInt(matchHoras[1], 10);
 
-      // Extraer bono
+      // 3. Extraer descuento de préstamo / aportes
+      let tieneDescuentoPrestamo = false;
+      let valorDescuentoPrestamo = 0;
+      const matchPrestamo = q.match(/(?:prestamo|aporte|descuento)(?:\s*(?:de|=|:))?\s*(?:\$|\b)([0-9]{1,3}(?:[.,][0-9]{3})+|[0-9]{3,6})\b/i);
+      if (matchPrestamo) {
+        tieneDescuentoPrestamo = true;
+        valorDescuentoPrestamo = parseInt(matchPrestamo[1].replace(/[.,]/g, ''), 10);
+      } else if (q.includes('con prestamo') || q.includes('con aporte') || q.includes('con aportes')) {
+        tieneDescuentoPrestamo = true;
+        valorDescuentoPrestamo = 4000;
+      } else if (q.includes('sin prestamo') || q.includes('sin aporte') || q.includes('sin aportes') || q.includes('sin descuento')) {
+        tieneDescuentoPrestamo = false;
+        valorDescuentoPrestamo = 0;
+      }
+
+      // 4. Extraer bono
       let bono = 0;
       const matchBono = q.match(/bono(?:\s*de)?\s*(?:\$|\b)([0-9]{2,3}(?:[.,][0-9]{3})+|[0-9]{4,6})\b/);
       if (matchBono) bono = parseInt(matchBono[1].replace(/[.,]/g, ''), 10);
 
-      // Identificar trabajador
-      const palabrasControlLiq = new Set([
-        'liquida', 'liquidale', 'ingresa', 'ingresale', 'calcula', 'calculale', 'mete', 'metele', 'agrega', 'agregale',
-        'con', 'de', 'del', 'a', 'al', 'los', 'las', 'el', 'la', 'un', 'una', 'por', 'en',
-        'turnos', 'turno', 'dias', 'dia', 'horas', 'hora', 'extra', 'extras', 'adicionales', 'adicional',
-        'bono', 'bonos', 'nomina', 'cuadro', 'tabla', 'porfa', 'favor', 'favorito'
-      ]);
+      // 5. Verificar ARL
+      const sinARL = q.includes('sin arl') || q.includes('no arl') || q.includes('sin seguridad');
 
-      const tokensNombre = q.split(/\s+/).filter(w => w.length >= 3 && !palabrasControlLiq.has(w) && !/^\d+$/.test(w));
+      // 6. Identificar al trabajador
       let trabajadorEncontrado: any = null;
 
-      if (tokensNombre.length > 0) {
-        const candidatos = todosTrabajadores.map(t => {
-          const tNorm = t.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-          let score = 0;
-          if (tokensNombre.every(tk => tNorm.includes(tk))) {
-            score = 100 + tokensNombre.length * 10;
-          } else {
-            const palabrasT = tNorm.split(/\s+/).filter((w: string) => w.length >= 3);
-            for (const tk of tokensNombre) {
-              if (palabrasT.includes(tk)) score += 20;
-            }
-          }
-          return { t, score };
-        }).filter(c => c.score > 0).sort((a, b) => b.score - a.score);
+      if (context?.liquidandoPendiente?.trabajador) {
+        trabajadorEncontrado = todosTrabajadores.find(t =>
+          String(t.cedula).trim() === String(context.liquidandoPendiente!.trabajador.cedula).trim() ||
+          t.id === context.liquidandoPendiente!.trabajador.id
+        ) || context.liquidandoPendiente.trabajador;
+      }
 
-        if (candidatos.length > 0 && candidatos[0].score >= 20) {
-          trabajadorEncontrado = candidatos[0].t;
+      if (!trabajadorEncontrado) {
+        const palabrasControlLiq = new Set([
+          'liquida', 'liquidale', 'ingresa', 'ingresale', 'calcula', 'calculale', 'mete', 'metele', 'agrega', 'agregale',
+          'con', 'de', 'del', 'a', 'al', 'los', 'las', 'el', 'la', 'un', 'una', 'por', 'en',
+          'turnos', 'turno', 'dias', 'dia', 'horas', 'hora', 'extra', 'extras', 'adicionales', 'adicional',
+          'bono', 'bonos', 'nomina', 'cuadro', 'tabla', 'porfa', 'favor', 'favorito', 'prestamo', 'aporte', 'aportes',
+          'descuento', 'arl', 'seguridad', 'sin', 'social'
+        ]);
+
+        const tokensNombre = q.split(/\s+/).filter(w => w.length >= 3 && !palabrasControlLiq.has(w) && !/^\d+$/.test(w));
+
+        if (tokensNombre.length > 0) {
+          const candidatos = todosTrabajadores.map(t => {
+            const tNorm = t.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+            let score = 0;
+            if (tokensNombre.every(tk => tNorm.includes(tk))) {
+              score = 100 + tokensNombre.length * 10;
+            } else {
+              const palabrasT = tNorm.split(/\s+/).filter((w: string) => w.length >= 3);
+              for (const tk of tokensNombre) {
+                if (palabrasT.includes(tk)) score += 20;
+              }
+            }
+            return { t, score };
+          }).filter(c => c.score > 0).sort((a, b) => b.score - a.score);
+
+          if (candidatos.length > 0 && candidatos[0].score >= 20) {
+            trabajadorEncontrado = candidatos[0].t;
+          }
         }
       }
 
@@ -579,16 +619,22 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         ) || context.ultimoTrabajador;
       }
 
+      // CASO 1: Trabajador identificado Y se especificaron los días de turno
       if (trabajadorEncontrado && diasTurno > 0) {
-        // Verificar si ya está en la nómina
         const yaExiste = (historial || []).some(h => String(h.persona?.cedula || '').trim() === String(trabajadorEncontrado.cedula).trim());
 
         const valorTurno = trabajadorEncontrado.valor_turno || 0;
         const valorHora = trabajadorEncontrado.valor_hora_adicional || Math.round(valorTurno / 8);
         const subtotalTurnos = diasTurno * valorTurno;
         const subtotalHoras = horasAdicionales * valorHora;
-        const totalBrutoSinARL = subtotalTurnos + subtotalHoras + bono;
-        const neto = totalBrutoSinARL;
+
+        const tieneDescuentoSeguridad = !sinARL && diasTurno > 0;
+        const valorDescuentoSeguridad = tieneDescuentoSeguridad ? calcularDescuentoARLPila(diasTurno) : 0;
+        const descuentoPrestamo = tieneDescuentoPrestamo ? valorDescuentoPrestamo : 0;
+
+        const totalBruto = subtotalTurnos + subtotalHoras + bono + valorDescuentoSeguridad;
+        const totalDescuentos = valorDescuentoSeguridad + descuentoPrestamo;
+        const neto = Math.max(0, totalBruto - totalDescuentos);
 
         const pPayload = {
           nombre: trabajadorEncontrado.nombre,
@@ -601,17 +647,20 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         };
 
         const avisoDuplicado = yaExiste
-          ? `⚠️ **Advertencia**: ${trabajadorEncontrado.nombre} ya tiene un registro en este cuadro de nómina. Si confirmas, se añadirá una nueva liquidación adicional.\n\n`
+          ? `⚠️ **Advertencia**: ${trabajadorEncontrado.nombre} ya tiene una liquidación registrada en esta quincena. Si confirmas, se añadirá una nueva adicional.\n\n`
           : '';
 
         return {
-          text: `${avisoDuplicado}📋 **Cálculo de Liquidación para ${trabajadorEncontrado.nombre}**:\n\n` +
-            `• 👤 **Cédula**: \`${trabajadorEncontrado.cedula}\` | 🏢 **Parqueadero**: ${trabajadorEncontrado.cargo || 'General'}\n` +
+          text: `${avisoDuplicado}📋 **Cálculo de Liquidación para el Cuadro de Nómina**:\n\n` +
+            `• 👤 **Trabajador**: **${trabajadorEncontrado.nombre}** (C.C. \`${trabajadorEncontrado.cedula}\`)\n` +
+            `• 🏢 **Parqueadero**: ${trabajadorEncontrado.cargo || 'General'}\n` +
             `• 📅 **Días Turno**: **${diasTurno} días** × ${fmt(valorTurno)} = **${fmt(subtotalTurnos)}**\n` +
             (horasAdicionales > 0 ? `• ⏱️ **Horas Extra**: **${horasAdicionales} hrs** × ${fmt(valorHora)} = **${fmt(subtotalHoras)}**\n` : '') +
+            (tieneDescuentoSeguridad ? `• 🛡️ **Seguridad Social / ARL PILA**: **${fmt(valorDescuentoSeguridad)}** (${diasTurno} días cotizados)\n` : '• 🛡️ **ARL**: Sin descuento\n') +
+            (tieneDescuentoPrestamo ? `• 💳 **Descuento Préstamo / Aportes**: **${fmt(valorDescuentoPrestamo)}**\n` : '• 💳 **Préstamos/Aportes**: $0 (Sin descuento)\n') +
             (bono > 0 ? `• 🎁 **Bono Adicional**: **${fmt(bono)}**\n` : '') +
-            `• 💵 **Neto a Pagar**: **${fmt(neto)}**\n` +
-            `• 💳 **Forma de Pago**: ${trabajadorEncontrado.forma_pago || 'No definida'} (${trabajadorEncontrado.numero_cuenta ? `\`${trabajadorEncontrado.numero_cuenta}\`` : '*Sin cuenta*'})\n\n` +
+            `• 💵 **TOTAL NETO A PAGAR**: **${fmt(neto)}** (⏳ Pendiente)\n` +
+            `• 🏦 **Forma de Pago**: ${trabajadorEncontrado.forma_pago || 'No definida'} (${trabajadorEncontrado.numero_cuenta ? `\`${trabajadorEncontrado.numero_cuenta}\`` : '*Sin cuenta*'})\n\n` +
             `¿Deseas registrar esta liquidación directamente en el cuadro de nómina?`,
           acciones: [
             {
@@ -622,7 +671,9 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
                 diasTurno,
                 horasAdicionales,
                 tieneBono: bono > 0,
-                valorBono: bono
+                valorBono: bono,
+                tieneDescuentoPrestamo,
+                valorDescuentoPrestamo
               }
             },
             {
@@ -636,10 +687,132 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
           ],
           nuevoContexto: {
             ultimoTrabajador: trabajadorEncontrado,
-            campoPendiente: undefined
+            liquidandoPendiente: undefined
           }
         };
       }
+
+      // CASO 2: Trabajador identificado pero NO se han especificado los días ni deducciones
+      if (trabajadorEncontrado && diasTurno === 0) {
+        const yaExiste = (historial || []).some(h => String(h.persona?.cedula || '').trim() === String(trabajadorEncontrado.cedula).trim());
+        const avisoDuplicado = yaExiste
+          ? `⚠️ *Nota: ${trabajadorEncontrado.nombre} ya tiene un registro en este cuadro de nómina.*\n\n`
+          : '';
+
+        return {
+          text: `${avisoDuplicado}📋 **Para ingresar a ${trabajadorEncontrado.nombre} (C.C. \`${trabajadorEncontrado.cedula}\`) a la nómina, indícame los datos de su liquidación**:\n\n` +
+            `• 📅 **¿Cuántos días de turno laboró?** (Ej: *15* o *16 días*)\n` +
+            `• ⏱️ **¿Tuvo horas extra o turnos adicionales?** (Opcional, ej: *2 horas extra*)\n` +
+            `• 🛡️ **ARL**: Se calculará automáticamente según sus días cotizados.\n` +
+            `• 💳 **Descuento de préstamos/aportes**: ¿Aplica descuento? (Usualmente *$4.000* o *$0* si no tiene).\n` +
+            `• 🎁 **Bono**: (Opcional si tiene un incentivo adicional).\n\n` +
+            `💬 *Puedes responder por ejemplo:*\n` +
+            `• *"16 turnos"*\n` +
+            `• *"15 turnos y 4000 de aporte"*\n` +
+            `• *"16 días con 2 horas extra y sin préstamo"*\n\n` +
+            `*(O selecciona una opción rápida abajo)*`,
+          acciones: [
+            {
+              label: `📅 16 turnos`,
+              tipo: 'LIQUIDAR_TRABAJADOR',
+              payload: {
+                persona: {
+                  nombre: trabajadorEncontrado.nombre,
+                  cedula: trabajadorEncontrado.cedula,
+                  cargo: trabajadorEncontrado.cargo || 'General',
+                  valorTurno: trabajadorEncontrado.valor_turno || 0,
+                  valorHoraAdicional: trabajadorEncontrado.valor_hora_adicional || Math.round((trabajadorEncontrado.valor_turno || 0) / 8),
+                  formaPago: trabajadorEncontrado.forma_pago || 'Bancaria',
+                  numeroCuenta: trabajadorEncontrado.numero_cuenta || ''
+                },
+                diasTurno: 16,
+                horasAdicionales: 0,
+                tieneDescuentoPrestamo: false,
+                valorDescuentoPrestamo: 0
+              }
+            },
+            {
+              label: `📅 15 turnos`,
+              tipo: 'LIQUIDAR_TRABAJADOR',
+              payload: {
+                persona: {
+                  nombre: trabajadorEncontrado.nombre,
+                  cedula: trabajadorEncontrado.cedula,
+                  cargo: trabajadorEncontrado.cargo || 'General',
+                  valorTurno: trabajadorEncontrado.valor_turno || 0,
+                  valorHoraAdicional: trabajadorEncontrado.valor_hora_adicional || Math.round((trabajadorEncontrado.valor_turno || 0) / 8),
+                  formaPago: trabajadorEncontrado.forma_pago || 'Bancaria',
+                  numeroCuenta: trabajadorEncontrado.numero_cuenta || ''
+                },
+                diasTurno: 15,
+                horasAdicionales: 0,
+                tieneDescuentoPrestamo: false,
+                valorDescuentoPrestamo: 0
+              }
+            },
+            {
+              label: `📅 16 turnos + $4.000 aporte`,
+              tipo: 'LIQUIDAR_TRABAJADOR',
+              payload: {
+                persona: {
+                  nombre: trabajadorEncontrado.nombre,
+                  cedula: trabajadorEncontrado.cedula,
+                  cargo: trabajadorEncontrado.cargo || 'General',
+                  valorTurno: trabajadorEncontrado.valor_turno || 0,
+                  valorHoraAdicional: trabajadorEncontrado.valor_hora_adicional || Math.round((trabajadorEncontrado.valor_turno || 0) / 8),
+                  formaPago: trabajadorEncontrado.forma_pago || 'Bancaria',
+                  numeroCuenta: trabajadorEncontrado.numero_cuenta || ''
+                },
+                diasTurno: 16,
+                horasAdicionales: 0,
+                tieneDescuentoPrestamo: true,
+                valorDescuentoPrestamo: 4000
+              }
+            }
+          ],
+          nuevoContexto: {
+            ultimoTrabajador: trabajadorEncontrado,
+            liquidandoPendiente: {
+              trabajador: trabajadorEncontrado
+            }
+          }
+        };
+      }
+
+      // CASO 3: No se indicó qué trabajador ingresar
+      const cedulasLiquidadas = new Set((historial || []).map(h => String(h.persona?.cedula || '').trim()));
+      const faltantes = todosTrabajadores.filter(t => !cedulasLiquidadas.has(String(t.cedula || '').trim()));
+
+      const listaAcciones = faltantes.slice(0, 4).map(f => ({
+        label: `👤 Ingresar a ${f.nombre.split(' ')[0]} (${f.cargo || 'General'})`,
+        tipo: 'LIQUIDAR_TRABAJADOR' as const,
+        payload: {
+          persona: {
+            nombre: f.nombre,
+            cedula: f.cedula,
+            cargo: f.cargo || 'General',
+            valorTurno: f.valor_turno || 0,
+            valorHoraAdicional: f.valor_hora_adicional || Math.round((f.valor_turno || 0) / 8),
+            formaPago: f.forma_pago || 'Bancaria',
+            numeroCuenta: f.numero_cuenta || ''
+          },
+          diasTurno: 16,
+          horasAdicionales: 0,
+          tieneDescuentoPrestamo: false,
+          valorDescuentoPrestamo: 0
+        }
+      }));
+
+      return {
+        text: `👥 **¿A qué trabajador deseas ingresar al cuadro de nómina?**\n\n` +
+          `Actualmente faltan **${faltantes.length} persona(s)** por ingresar a la nómina activa.\n\n` +
+          `💬 **Puedes escribirme directamente:**\n` +
+          `• *"Ingresa a Donella con 16 turnos"*\n` +
+          `• *"Liquida a ${faltantes[0]?.nombre || 'Carlos'} 15 turnos"*\n` +
+          `• *"Agrega a ${faltantes[1]?.nombre || 'Diana'} 16 días y 4000 de aporte"*\n\n` +
+          (faltantes.length > 0 ? `*(O pulsa uno de los botones abajo para ingresar con 16 turnos estándar)*:` : ''),
+        acciones: listaAcciones
+      };
     }
   }
 

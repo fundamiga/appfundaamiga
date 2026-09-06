@@ -4,7 +4,7 @@ import { calcularDescuentoARLPila } from '@/utils/calcularDescuentoARL';
 
 export interface ChatAction {
   label: string;
-  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO' | 'DESPLAZAR_TABLA' | 'EDITAR_EN_TABLA';
+  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO' | 'DESPLAZAR_TABLA' | 'EDITAR_EN_TABLA' | 'LIQUIDAR_TRABAJADOR' | 'PAGO_MASIVO' | 'APLICAR_FILTROS';
   payload?: any;
 }
 
@@ -119,6 +119,186 @@ export async function executeUpdateTrabajador(payload: {
   }
 }
 
+export const obtenerPeriodo = () => {
+  const f = new Date();
+  const dia = f.getDate();
+  const mes = f.toLocaleString('es-CO', { month: 'long' });
+  const año = f.getFullYear();
+  return `${dia <= 15 ? '1ra' : '2da'} Quincena - ${mes.charAt(0).toUpperCase() + mes.slice(1)} ${año}`;
+};
+
+export async function executeLiquidacionDirecta(payload: {
+  persona: {
+    nombre: string;
+    cedula: string;
+    cargo: string;
+    valorTurno: number;
+    valorHoraAdicional: number;
+    formaPago: string;
+    numeroCuenta?: string;
+  };
+  diasTurno: number;
+  turnosAdicionales?: number;
+  horasAdicionales?: number;
+  tieneBono?: boolean;
+  valorBono?: number;
+  descripcionBono?: string;
+  tieneDescuentoPrestamo?: boolean;
+  valorDescuentoPrestamo?: number;
+}): Promise<{ success: boolean; message: string; id?: string }> {
+  try {
+    const p = payload.persona;
+    const diasTurno = Number(payload.diasTurno) || 0;
+    const turnosAdicionales = Number(payload.turnosAdicionales) || 0;
+    const horasAdicionales = Number(payload.horasAdicionales) || 0;
+    const tieneBono = Boolean(payload.tieneBono);
+    const valorBono = Number(payload.valorBono) || 0;
+    const tieneDescuentoPrestamo = Boolean(payload.tieneDescuentoPrestamo);
+    const valorDescuentoPrestamo = Number(payload.valorDescuentoPrestamo) || 0;
+
+    const valorDescuentoSeguridad = calcularDescuentoARLPila(diasTurno);
+    const tieneDescuentoSeguridad = diasTurno > 0;
+
+    const subtotalTurnos = diasTurno * (p.valorTurno || 0);
+    const subtotalTurnosAdicionales = turnosAdicionales * (p.valorTurno || 0);
+    const subtotalHoras = horasAdicionales * (p.valorHoraAdicional || 0);
+    const bono = tieneBono ? valorBono : 0;
+    const descuentoSeguridad = tieneDescuentoSeguridad ? valorDescuentoSeguridad : 0;
+    const descuentoPrestamo = tieneDescuentoPrestamo ? valorDescuentoPrestamo : 0;
+
+    const totalBruto = subtotalTurnos + subtotalTurnosAdicionales + subtotalHoras + bono + descuentoSeguridad;
+    const totalDescuentos = descuentoSeguridad + descuentoPrestamo;
+    const neto = Math.max(0, totalBruto - totalDescuentos);
+
+    const fmtOp = (n: number) => n.toLocaleString('es-CO');
+
+    const resultado = {
+      subtotalTurnos,
+      subtotalTurnosAdicionales,
+      subtotalHoras,
+      bono,
+      totalBruto,
+      descuentoSeguridad,
+      descuentoPrestamo,
+      totalDescuentos,
+      neto,
+      operaciones: {
+        turnos: `${diasTurno} días × ${fmtOp(p.valorTurno)} = ${fmtOp(subtotalTurnos)}`,
+        turnosAdicionales: `${turnosAdicionales} turnos × ${fmtOp(p.valorTurno)} = ${fmtOp(subtotalTurnosAdicionales)}`,
+        horas: `${horasAdicionales} horas × ${fmtOp(p.valorHoraAdicional)} = ${fmtOp(subtotalHoras)}`,
+        bruto: `${fmtOp(subtotalTurnos)} + ${fmtOp(subtotalTurnosAdicionales)} + ${fmtOp(subtotalHoras)} + ${fmtOp(bono)} + ${fmtOp(descuentoSeguridad)} = ${fmtOp(totalBruto)}`,
+        descuentos: `${fmtOp(descuentoSeguridad)} (ARL) + ${fmtOp(descuentoPrestamo)} (Aportes) = ${fmtOp(totalDescuentos)}`,
+        neto: `${fmtOp(totalBruto)} (Bruto) − ${fmtOp(totalDescuentos)} (Descuentos) = ${fmtOp(neto)}`
+      }
+    };
+
+    const form = {
+      diasTurno,
+      turnosAdicionales,
+      horasAdicionales,
+      tieneDescuentoSeguridad,
+      valorDescuentoSeguridad,
+      tieneDescuentoPrestamo,
+      valorDescuentoPrestamo,
+      tieneBono,
+      valorBono,
+      descripcionBono: payload.descripcionBono || '',
+      observaciones: 'Liquidado vía Asistente IA'
+    };
+
+    const id = Date.now().toString();
+    const fecha = new Date().toLocaleString('es-CO');
+    const quincena = obtenerPeriodo();
+
+    const { error } = await supabase.from('historial_liquidaciones').insert({
+      id,
+      persona: {
+        nombre: p.nombre,
+        cedula: p.cedula,
+        cargo: p.cargo,
+        valorTurno: p.valorTurno,
+        valorHoraAdicional: p.valorHoraAdicional,
+        formaPago: p.formaPago,
+        numeroCuenta: p.numeroCuenta || ''
+      },
+      form,
+      resultado,
+      fecha,
+      estado: 'Pendiente',
+      quincena
+    });
+
+    if (error) {
+      return { success: false, message: `❌ Error al guardar liquidación en Supabase: ${error.message}` };
+    }
+
+    return {
+      success: true,
+      message: `🎉 **¡Liquidación registrada exitosamente!**\n\n` +
+        `👤 **${p.nombre}** (C.C. \`${p.cedula}\`)\n` +
+        `• 📅 Turnos: **${diasTurno} días** ${horasAdicionales > 0 ? `| Horas: ${horasAdicionales} hrs` : ''}\n` +
+        `• 💰 Neto a pagar: **${fmt(neto)}** (⏳ Pendiente)\n` +
+        `• 💳 Forma de pago: ${p.formaPago} (${p.numeroCuenta || 'Sin cuenta'})\n\n` +
+        `*El cuadro de nómina se ha actualizado en tiempo real.*`,
+      id
+    };
+  } catch (err: any) {
+    return { success: false, message: `❌ Error inesperado: ${err?.message || 'Error de conexión'}` };
+  }
+}
+
+export async function executePagoMasivo(payload: {
+  tipoFiltro: 'banco' | 'cargo' | 'todos';
+  valorFiltro?: string;
+}): Promise<{ success: boolean; message: string; actualizados: number }> {
+  try {
+    const { data: historial, error: errFetch } = await supabase
+      .from('historial_liquidaciones')
+      .select('*')
+      .eq('estado', 'Pendiente');
+
+    if (errFetch || !historial) {
+      return { success: false, message: `❌ Error al consultar pendientes: ${errFetch?.message}`, actualizados: 0 };
+    }
+
+    let aActualizar = historial;
+    if (payload.tipoFiltro === 'banco' && payload.valorFiltro) {
+      aActualizar = historial.filter(h =>
+        (h.persona?.formaPago || '').toLowerCase().includes(payload.valorFiltro!.toLowerCase())
+      );
+    } else if (payload.tipoFiltro === 'cargo' && payload.valorFiltro) {
+      aActualizar = historial.filter(h =>
+        (h.persona?.cargo || '').toLowerCase().includes(payload.valorFiltro!.toLowerCase())
+      );
+    }
+
+    if (aActualizar.length === 0) {
+      return { success: true, message: `ℹ️ No se encontraron trabajadores con pagos pendientes para el filtro seleccionado.`, actualizados: 0 };
+    }
+
+    const ids = aActualizar.map(h => h.id);
+    const { error: errUpdate } = await supabase
+      .from('historial_liquidaciones')
+      .update({ estado: 'Pagado' })
+      .in('id', ids);
+
+    if (errUpdate) {
+      return { success: false, message: `❌ Error al actualizar en Supabase: ${errUpdate.message}`, actualizados: 0 };
+    }
+
+    return {
+      success: true,
+      message: `🎉 **¡Pago masivo completado con éxito!**\n\n` +
+        `Se marcaron como **✅ Pagados** a **${ids.length} trabajador(es)**` +
+        (payload.valorFiltro ? ` de **${payload.valorFiltro}**` : '') + `.\n` +
+        `*El cuadro de nómina se ha sincronizado en vivo.*`,
+      actualizados: ids.length
+    };
+  } catch (err: any) {
+    return { success: false, message: `❌ Error inesperado: ${err?.message || 'Error al procesar'}`, actualizados: 0 };
+  }
+}
+
 export async function processAIChatMessage(message: string, context?: ChatContext): Promise<ChatResponse> {
   const cleanMsg = message.trim();
   if (!cleanMsg) return { text: 'Por favor escribe una consulta válida.' };
@@ -189,6 +369,427 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         `• 🚚 **Remesas**: Movimientos y personal asignado.\n` +
         `• 🧮 **Cálculos**: Pregúntame cómo se calculan turnos, horas extra o préstamos.\n\n` +
         `*Prueba escribiendo un nombre (ej: "carlos"), "resumen nomina" o selecciona un botón rápido arriba.*`
+    };
+  }
+
+  // ── 0.0 LIQUIDACIÓN DIRECTA DESDE EL CHAT ───────────────────────────────────
+  const verbosLiquidar = /\b(liquida|liquidale|ingresa|ingresale|calcula|calculale|mete|metele|agrega|agregale)\b/i;
+  const tienePalabraLiquidacion = verbosLiquidar.test(q) && (/\b(\d+)\s*(?:dias?|turnos?)\b/.test(q) || /\bcon\s*(\d+)\s*(?:dias?|turnos?)\b/.test(q) || /\b(\d+)\s*y\s*(\d+)\b/.test(q));
+
+  if (tienePalabraLiquidacion) {
+    const { data: todosTrabajadores } = await supabase.from('trabajadores').select('*');
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+
+    if (todosTrabajadores && todosTrabajadores.length > 0) {
+      // Extraer días turno
+      let diasTurno = 0;
+      const matchTurnos = q.match(/\b(\d+)\s*(?:dias?|turnos?)\b/) || q.match(/\b(?:con|de)\s*(\d+)\s*(?:turnos?|dias?)\b/);
+      if (matchTurnos) diasTurno = parseInt(matchTurnos[1], 10);
+
+      // Extraer horas adicionales
+      let horasAdicionales = 0;
+      const matchHoras = q.match(/\b(\d+)\s*(?:horas?|extras?|adicionales?)\b/);
+      if (matchHoras) horasAdicionales = parseInt(matchHoras[1], 10);
+
+      // Extraer bono
+      let bono = 0;
+      const matchBono = q.match(/bono(?:\s*de)?\s*(?:\$|\b)([0-9]{2,3}(?:[.,][0-9]{3})+|[0-9]{4,6})\b/);
+      if (matchBono) bono = parseInt(matchBono[1].replace(/[.,]/g, ''), 10);
+
+      // Identificar trabajador
+      const palabrasControlLiq = new Set([
+        'liquida', 'liquidale', 'ingresa', 'ingresale', 'calcula', 'calculale', 'mete', 'metele', 'agrega', 'agregale',
+        'con', 'de', 'del', 'a', 'al', 'los', 'las', 'el', 'la', 'un', 'una', 'por', 'en',
+        'turnos', 'turno', 'dias', 'dia', 'horas', 'hora', 'extra', 'extras', 'adicionales', 'adicional',
+        'bono', 'bonos', 'nomina', 'cuadro', 'tabla', 'porfa', 'favor', 'favorito'
+      ]);
+
+      const tokensNombre = q.split(/\s+/).filter(w => w.length >= 3 && !palabrasControlLiq.has(w) && !/^\d+$/.test(w));
+      let trabajadorEncontrado: any = null;
+
+      if (tokensNombre.length > 0) {
+        const candidatos = todosTrabajadores.map(t => {
+          const tNorm = t.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+          let score = 0;
+          if (tokensNombre.every(tk => tNorm.includes(tk))) {
+            score = 100 + tokensNombre.length * 10;
+          } else {
+            const palabrasT = tNorm.split(/\s+/).filter((w: string) => w.length >= 3);
+            for (const tk of tokensNombre) {
+              if (palabrasT.includes(tk)) score += 20;
+            }
+          }
+          return { t, score };
+        }).filter(c => c.score > 0).sort((a, b) => b.score - a.score);
+
+        if (candidatos.length > 0 && candidatos[0].score >= 20) {
+          trabajadorEncontrado = candidatos[0].t;
+        }
+      }
+
+      if (!trabajadorEncontrado && context?.ultimoTrabajador) {
+        trabajadorEncontrado = todosTrabajadores.find(t =>
+          String(t.cedula).trim() === String(context.ultimoTrabajador.cedula).trim() ||
+          t.id === context.ultimoTrabajador.id
+        ) || context.ultimoTrabajador;
+      }
+
+      if (trabajadorEncontrado && diasTurno > 0) {
+        // Verificar si ya está en la nómina
+        const yaExiste = (historial || []).some(h => String(h.persona?.cedula || '').trim() === String(trabajadorEncontrado.cedula).trim());
+
+        const valorTurno = trabajadorEncontrado.valor_turno || 0;
+        const valorHora = trabajadorEncontrado.valor_hora_adicional || Math.round(valorTurno / 8);
+        const subtotalTurnos = diasTurno * valorTurno;
+        const subtotalHoras = horasAdicionales * valorHora;
+        const totalBrutoSinARL = subtotalTurnos + subtotalHoras + bono;
+        const neto = totalBrutoSinARL;
+
+        const pPayload = {
+          nombre: trabajadorEncontrado.nombre,
+          cedula: trabajadorEncontrado.cedula,
+          cargo: trabajadorEncontrado.cargo || 'General',
+          valorTurno: valorTurno,
+          valorHoraAdicional: valorHora,
+          formaPago: trabajadorEncontrado.forma_pago || 'Bancaria',
+          numeroCuenta: trabajadorEncontrado.numero_cuenta || ''
+        };
+
+        const avisoDuplicado = yaExiste
+          ? `⚠️ **Advertencia**: ${trabajadorEncontrado.nombre} ya tiene un registro en este cuadro de nómina. Si confirmas, se añadirá una nueva liquidación adicional.\n\n`
+          : '';
+
+        return {
+          text: `${avisoDuplicado}📋 **Cálculo de Liquidación para ${trabajadorEncontrado.nombre}**:\n\n` +
+            `• 👤 **Cédula**: \`${trabajadorEncontrado.cedula}\` | 🏢 **Parqueadero**: ${trabajadorEncontrado.cargo || 'General'}\n` +
+            `• 📅 **Días Turno**: **${diasTurno} días** × ${fmt(valorTurno)} = **${fmt(subtotalTurnos)}**\n` +
+            (horasAdicionales > 0 ? `• ⏱️ **Horas Extra**: **${horasAdicionales} hrs** × ${fmt(valorHora)} = **${fmt(subtotalHoras)}**\n` : '') +
+            (bono > 0 ? `• 🎁 **Bono Adicional**: **${fmt(bono)}**\n` : '') +
+            `• 💵 **Neto a Pagar**: **${fmt(neto)}**\n` +
+            `• 💳 **Forma de Pago**: ${trabajadorEncontrado.forma_pago || 'No definida'} (${trabajadorEncontrado.numero_cuenta ? `\`${trabajadorEncontrado.numero_cuenta}\`` : '*Sin cuenta*'})\n\n` +
+            `¿Deseas registrar esta liquidación directamente en el cuadro de nómina?`,
+          acciones: [
+            {
+              label: `⚡ Registrar a ${trabajadorEncontrado.nombre.split(' ')[0]} en nómina (${fmt(neto)})`,
+              tipo: 'LIQUIDAR_TRABAJADOR',
+              payload: {
+                persona: pPayload,
+                diasTurno,
+                horasAdicionales,
+                tieneBono: bono > 0,
+                valorBono: bono
+              }
+            },
+            {
+              label: `📍 Ubicar a ${trabajadorEncontrado.nombre.split(' ')[0]} en la tabla`,
+              tipo: 'DESPLAZAR_TABLA',
+              payload: {
+                cedula: trabajadorEncontrado.cedula,
+                nombre: trabajadorEncontrado.nombre
+              }
+            }
+          ],
+          nuevoContexto: {
+            ultimoTrabajador: trabajadorEncontrado,
+            campoPendiente: undefined
+          }
+        };
+      }
+    }
+  }
+
+  // ── 0.05 AUDITORÍA Y DETECCIÓN DE ANOMALÍAS ─────────────────────────────────
+  const esAuditoria =
+    q.includes('auditoria') || q.includes('auditar') ||
+    q.includes('revisa la nomina') || q.includes('revisar nomina') || q.includes('revisa el cuadro') || q.includes('revisar el cuadro') ||
+    q.includes('hay errores') || q.includes('detectar errores') || q.includes('anomalias') || q.includes('inconsistencias');
+
+  if (esAuditoria) {
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+
+    if (!historial || historial.length === 0) {
+      return { text: `📋 El cuadro de nómina está vacío actualmente. No hay registros para auditar.` };
+    }
+
+    const anomalías: string[] = [];
+
+    // 1. Duplicados en la nómina
+    const conteoCedulas = new Map<string, typeof historial>();
+    historial.forEach(h => {
+      const c = String(h.persona?.cedula || '').trim();
+      if (c) {
+        if (!conteoCedulas.has(c)) conteoCedulas.set(c, []);
+        conteoCedulas.get(c)!.push(h);
+      }
+    });
+
+    const duplicados = Array.from(conteoCedulas.entries()).filter(([_, lista]) => lista.length > 1);
+    if (duplicados.length > 0) {
+      let dTxt = `🚨 **Duplicados detectados en el cuadro (${duplicados.length})**:\n`;
+      duplicados.forEach(([ced, lista]) => {
+        dTxt += `   • 👤 **${lista[0].persona?.nombre}** (C.C. \`${ced}\`) aparece **${lista.length} veces** en la nómina.\n`;
+      });
+      anomalías.push(dTxt);
+    }
+
+    // 2. Turnos atípicos (> 16 turnos en quincena) o muchas horas extra (> 12 hrs)
+    const turnosAltos = historial.filter(h => (h.form?.diasTurno || 0) > 16 || (h.form?.horasAdicionales || 0) > 12);
+    if (turnosAltos.length > 0) {
+      let tTxt = `⚠️ **Turnos o recargos atípicos (${turnosAltos.length})**:\n`;
+      turnosAltos.forEach(h => {
+        tTxt += `   • 👤 **${h.persona?.nombre}**: **${h.form?.diasTurno || 0} turnos**, **${h.form?.horasAdicionales || 0} hrs extra**.\n`;
+      });
+      anomalías.push(tTxt);
+    }
+
+    // 3. Tarifas en cero
+    const tarifaCero = historial.filter(h => (h.persona?.valorTurno || 0) <= 0);
+    if (tarifaCero.length > 0) {
+      let zTxt = `⚠️ **Liquidaciones con tarifa de turno en $0 (${tarifaCero.length})**:\n`;
+      tarifaCero.forEach(h => {
+        zTxt += `   • 👤 **${h.persona?.nombre}** (C.C. \`${h.persona?.cedula}\`)\n`;
+      });
+      anomalías.push(zTxt);
+    }
+
+    // 4. Inconsistencias de cuenta bancaria
+    const cuentasInvalidas = historial.filter(h => {
+      const forma = (h.persona?.formaPago || '').toLowerCase();
+      if (forma === 'efectivo') return false;
+      const cta = (h.persona?.numeroCuenta || '').replace(/\D/g, '');
+      return cta.length < 7;
+    });
+    if (cuentasInvalidas.length > 0) {
+      let cTxt = `💳 **Cuentas bancarias dudosas o incompletas (${cuentasInvalidas.length})**:\n`;
+      cuentasInvalidas.forEach(h => {
+        cTxt += `   • 👤 **${h.persona?.nombre}** (${h.persona?.formaPago}): \`${h.persona?.numeroCuenta || 'Sin cuenta'}\`\n`;
+      });
+      anomalías.push(cTxt);
+    }
+
+    // 5. Sin parqueadero / cargo
+    const sinCargo = historial.filter(h => !h.persona?.cargo || h.persona?.cargo === 'No asignado');
+    if (sinCargo.length > 0) {
+      let scTxt = `🏢 **Sin parqueadero asignado (${sinCargo.length})**:\n`;
+      sinCargo.forEach(h => {
+        scTxt += `   • 👤 **${h.persona?.nombre}**\n`;
+      });
+      anomalías.push(scTxt);
+    }
+
+    if (anomalías.length === 0) {
+      return {
+        text: `🛡️ **Auditoría de Nómina en Vivo - Estado Impecable**:\n\n` +
+          `✅ Se auditaron **${historial.length} registros** en el cuadro de nómina.\n` +
+          `• 0 personas duplicadas.\n` +
+          `• 0 turnos fuera de rango.\n` +
+          `• Todas las tarifas y cuentas bancarias son válidas.\n\n` +
+          `🎉 **¡La nómina está 100% lista y consistente para pagos!**`
+      };
+    }
+
+    return {
+      text: `🛡️ **Resultado de Auditoría de Nómina (${anomalías.length} alertas detectadas)**:\n\n` +
+        anomalías.join('\n') + `\n` +
+        `💡 *Puedes pedirme modificar o abrir el editor de cualquiera de estas personas escribiendo su nombre.*`
+    };
+  }
+
+  // ── 0.06 CONTROL DE FILTROS DE TABLA DESDE EL CHAT ──────────────────────────
+  const esLimpiarFiltros =
+    q.includes('quitar filtros') || q.includes('quitar filtro') ||
+    q.includes('limpiar filtros') || q.includes('limpiar filtro') ||
+    q.includes('ver todos') || q.includes('mostrar todos') || q.includes('toda la tabla');
+
+  if (esLimpiarFiltros) {
+    return {
+      text: `🎛️ **Filtros restablecidos**: Ahora la tabla muestra todos los registros del cuadro de nómina sin restricciones.`,
+      acciones: [
+        {
+          label: `🔄 Restablecer vista de tabla`,
+          tipo: 'APLICAR_FILTROS',
+          payload: { cargo: '', banco: '', busqueda: '' }
+        }
+      ]
+    };
+  }
+
+  const cargosFiltroList = [
+    'CONTRATISTAS DE ADMINISTRACION', '5 - 6', '6 - 6', 'CARTON C', 'GUACANDA',
+    'TERCERA', 'ROZO', '2 - 10', 'MAYORISTA', 'GUABINAS', 'BOLIVAR', 'REMESAS'
+  ];
+
+  const mapaBancosFiltro: Record<string, string> = {
+    'bancolombia': 'Bancolombia',
+    'nequi': 'Nequi',
+    'daviplata': 'Daviplata',
+    'davivienda': 'Davivienda',
+    'av villas': 'AV Villas',
+    'villas': 'AV Villas',
+    'bbva': 'BBVA',
+    'banco de bogota': 'Banco de Bogotá',
+    'bogota': 'Banco de Bogotá',
+    'popular': 'Banco Popular',
+    'caja social': 'Caja Social',
+    'efectivo': 'Efectivo',
+    'transferencia': 'Transferencia'
+  };
+
+  const esIntentoFiltrar =
+    /\b(filtra|filtrar|filtro|muestra|mostrar|ver|solo)\b/.test(q) &&
+    (q.includes('tabla') || q.includes('cuadro') || cargosFiltroList.some(c => q.includes(c.toLowerCase())) || Object.keys(mapaBancosFiltro).some(b => q.includes(b)) || q.includes('pendiente') || q.includes('pagado'));
+
+  if (esIntentoFiltrar) {
+    const cargoFiltro = cargosFiltroList.find(c => q.includes(c.toLowerCase()));
+    const bancoFiltroKey = Object.keys(mapaBancosFiltro).find(b => q.includes(b));
+    const bancoFiltro = bancoFiltroKey ? mapaBancosFiltro[bancoFiltroKey] : undefined;
+
+    let busquedaEstado = '';
+    if (q.includes('pendiente') || q.includes('pendientes')) busquedaEstado = 'Pendiente';
+    if (q.includes('pagado') || q.includes('pagados')) busquedaEstado = 'Pagado';
+
+    if (cargoFiltro || bancoFiltro || busquedaEstado) {
+      const desc: string[] = [];
+      const payload: any = {};
+      if (cargoFiltro) {
+        payload.cargo = cargoFiltro;
+        desc.push(`🏢 Parqueadero: **${cargoFiltro}**`);
+      }
+      if (bancoFiltro) {
+        payload.banco = bancoFiltro;
+        desc.push(`🏦 Banco: **${bancoFiltro}**`);
+      }
+      if (busquedaEstado) {
+        payload.busqueda = busquedaEstado;
+        desc.push(`📌 Estado: **${busquedaEstado}**`);
+      }
+
+      return {
+        text: `🎛️ **Aplicando filtro en la tabla**:\n\n` + desc.join('\n') + `\n\n*La vista de la tabla se ha actualizado según tu solicitud.*`,
+        acciones: [
+          {
+            label: `🔍 Aplicar filtros solicitados`,
+            tipo: 'APLICAR_FILTROS',
+            payload
+          },
+          {
+            label: `🔄 Quitar filtros`,
+            tipo: 'APLICAR_FILTROS',
+            payload: { cargo: '', banco: '', busqueda: '' }
+          }
+        ]
+      };
+    }
+  }
+
+  // ── 0.07 PAGOS MASIVOS Y ESTADÍSTICAS POR SEGMENTO ─────────────────────────
+  const esMarcaPagadoMasivo =
+    /\b(marca|marcar|pasa|pasar|cambia|cambiar|pon|poner)\s*(?:a\s*)?(?:todos\s*)?(?:como\s*)?pagados?\b/i.test(q) ||
+    /\b(pagar\s*a\s*todos)\b/i.test(q);
+
+  if (esMarcaPagadoMasivo) {
+    const cargoFiltro = cargosFiltroList.find(c => q.includes(c.toLowerCase()));
+    const bancoFiltroKey = Object.keys(mapaBancosFiltro).find(b => q.includes(b));
+    const bancoFiltro = bancoFiltroKey ? mapaBancosFiltro[bancoFiltroKey] : undefined;
+
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*').eq('estado', 'Pendiente');
+
+    if (!historial || historial.length === 0) {
+      return { text: `✅ No hay pagos pendientes en el cuadro de nómina actual. Todos los registros ya están marcados como Pagados.` };
+    }
+
+    let pendientesFiltrados = historial;
+    let criterio = 'todos los pendientes';
+    let tipoFiltro: 'banco' | 'cargo' | 'todos' = 'todos';
+    let valorFiltro: string | undefined = undefined;
+
+    if (cargoFiltro) {
+      pendientesFiltrados = historial.filter(h => (h.persona?.cargo || '').toLowerCase() === cargoFiltro.toLowerCase());
+      criterio = `los del parqueadero **${cargoFiltro}**`;
+      tipoFiltro = 'cargo';
+      valorFiltro = cargoFiltro;
+    } else if (bancoFiltro) {
+      pendientesFiltrados = historial.filter(h => (h.persona?.formaPago || '').toLowerCase() === bancoFiltro.toLowerCase());
+      criterio = `los que cobran por **${bancoFiltro}**`;
+      tipoFiltro = 'banco';
+      valorFiltro = bancoFiltro;
+    }
+
+    if (pendientesFiltrados.length === 0) {
+      return { text: `ℹ️ No se encontraron trabajadores con pagos pendientes para ${criterio}.` };
+    }
+
+    const totalNeto = pendientesFiltrados.reduce((acc, h) => acc + (h.resultado?.neto || 0), 0);
+
+    return {
+      text: `💳 **Confirmación de Pago Masivo**:\n\n` +
+        `• 👥 Trabajadores a marcar como Pagados: **${pendientesFiltrados.length} personas** (${criterio})\n` +
+        `• 💰 Total Neto a liquidar: **${fmt(totalNeto)}**\n\n` +
+        `⚠️ ¿Deseas aplicar el cambio de estado a **✅ Pagado** en Supabase para estas ${pendientesFiltrados.length} personas?`,
+      acciones: [
+        {
+          label: `⚡ Confirmar pago masivo (${pendientesFiltrados.length} pers. — ${fmt(totalNeto)})`,
+          tipo: 'PAGO_MASIVO',
+          payload: { tipoFiltro, valorFiltro }
+        }
+      ]
+    };
+  }
+
+  // Estadísticas por segmento (ej: "cuanto suma guacanda", "cuanto es lo de bancolombia")
+  const esPreguntaCuantoSumaSegmento =
+    (/\b(cuanto\s*(?:suma|es|vale|se\s*debe|toca\s*pagar|total))\b/i.test(q)) &&
+    (cargosFiltroList.some(c => q.includes(c.toLowerCase())) || Object.keys(mapaBancosFiltro).some(b => q.includes(b)));
+
+  if (esPreguntaCuantoSumaSegmento) {
+    const cargoFiltro = cargosFiltroList.find(c => q.includes(c.toLowerCase()));
+    const bancoFiltroKey = Object.keys(mapaBancosFiltro).find(b => q.includes(b));
+    const bancoFiltro = bancoFiltroKey ? mapaBancosFiltro[bancoFiltroKey] : undefined;
+
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+
+    if (!historial || historial.length === 0) {
+      return { text: `El cuadro de nómina está vacío actualmente.` };
+    }
+
+    let filtrados = historial;
+    let titulo = '';
+
+    if (cargoFiltro) {
+      filtrados = historial.filter(h => (h.persona?.cargo || '').toLowerCase() === cargoFiltro.toLowerCase());
+      titulo = `🏢 Parqueadero ${cargoFiltro}`;
+    } else if (bancoFiltro) {
+      filtrados = historial.filter(h => (h.persona?.formaPago || '').toLowerCase() === bancoFiltro.toLowerCase());
+      titulo = `🏦 Forma de Pago ${bancoFiltro}`;
+    }
+
+    if (filtrados.length === 0) {
+      return { text: `No se encontraron personas liquidadas para **${titulo}** en el cuadro de nómina actual.` };
+    }
+
+    const tTurnos = filtrados.reduce((acc, h) => acc + (h.form?.diasTurno || 0), 0);
+    const tHoras = filtrados.reduce((acc, h) => acc + (h.form?.horasAdicionales || 0), 0);
+    const tNeto = filtrados.reduce((acc, h) => acc + (h.resultado?.neto || 0), 0);
+    const pagados = filtrados.filter(h => h.estado === 'Pagado');
+    const pendientes = filtrados.filter(h => h.estado !== 'Pagado');
+    const sumaPagados = pagados.reduce((acc, h) => acc + (h.resultado?.neto || 0), 0);
+    const sumaPendientes = pendientes.reduce((acc, h) => acc + (h.resultado?.neto || 0), 0);
+
+    return {
+      text: `📊 **Resumen Financiero: ${titulo}**\n\n` +
+        `• 👥 **Personas liquidadas**: ${filtrados.length}\n` +
+        `• 📅 **Total Turnos**: ${tTurnos} días ${tHoras > 0 ? `| ${tHoras} hrs adicionales` : ''}\n` +
+        `• 💰 **Total Neto a Pagar**: **${fmt(tNeto)}**\n` +
+        `   • ✅ Pagados: ${fmt(sumaPagados)} (${pagados.length} pers.)\n` +
+        `   • ⏳ Pendientes: ${fmt(sumaPendientes)} (${pendientes.length} pers.)\n\n` +
+        (pendientes.length > 0 ? `💡 *Puedes pedirme "marca como pagados a los de ${cargoFiltro || bancoFiltro}" para actualizar su estado.*` : `🎉 *Todos los pagos de este grupo ya están al día.*`),
+      acciones: [
+        {
+          label: `🔍 Filtrar tabla por ${cargoFiltro || bancoFiltro}`,
+          tipo: 'APLICAR_FILTROS',
+          payload: cargoFiltro ? { cargo: cargoFiltro } : { banco: bancoFiltro }
+        }
+      ]
     };
   }
 

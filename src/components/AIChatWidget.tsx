@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Sparkles, X, Send, Bot, User, ChevronDown, Check, Copy, Calculator, Shield, Users, HelpCircle, RefreshCw, Zap, MapPin, Pencil } from 'lucide-react';
-import { processAIChatMessage, ChatMessage, ChatAction, executeUpdateTrabajador, ChatContext } from '@/lib/aiChatService';
+import { processAIChatMessage, ChatMessage, ChatAction, executeUpdateTrabajador, executeLiquidacionDirecta, executePagoMasivo, ChatContext } from '@/lib/aiChatService';
 
 export default function AIChatWidget() {
   const [isOpen, setIsOpen] = useState(false);
@@ -95,6 +95,18 @@ export default function AIChatWidget() {
         }, 250);
       }
 
+      // Si la respuesta incluye aplicar filtros en la tabla, auto-aplicar
+      const accionFiltros = responseObj.acciones?.find(a => a.tipo === 'APLICAR_FILTROS');
+      if (accionFiltros?.payload) {
+        setTimeout(() => {
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('fundamiga:aplicar-filtros', {
+              detail: accionFiltros.payload
+            }));
+          }
+        }, 200);
+      }
+
       // Si la respuesta incluye abrir edición en la tabla, auto-abrir
       const accionEditar = responseObj.acciones?.find(a => a.tipo === 'EDITAR_EN_TABLA');
       if (accionEditar?.payload) {
@@ -125,6 +137,15 @@ export default function AIChatWidget() {
   const [accionesEjecutadas, setAccionesEjecutadas] = useState<string[]>([]);
 
   const handleExecuteAction = async (action: ChatAction, actIdx: number) => {
+    if (action.tipo === 'APLICAR_FILTROS' && action.payload) {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('fundamiga:aplicar-filtros', {
+          detail: action.payload
+        }));
+      }
+      return;
+    }
+
     if (action.tipo === 'DESPLAZAR_TABLA' && action.payload) {
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('fundamiga:desplazar-a-trabajador', {
@@ -159,6 +180,79 @@ export default function AIChatWidget() {
         const key = `${actIdx}-${action.payload}`;
         setCopiadoIdx(key);
         setTimeout(() => setCopiadoIdx(null), 2000);
+      }
+      return;
+    }
+
+    if (action.tipo === 'LIQUIDAR_TRABAJADOR' && action.payload) {
+      const actionKey = `liq-${actIdx}-${action.payload.persona?.cedula}`;
+      if (accionesEjecutadas.includes(actionKey) || ejecutandoAccionId === actionKey) return;
+
+      setEjecutandoAccionId(actionKey);
+      try {
+        const res = await executeLiquidacionDirecta(action.payload);
+        setAccionesEjecutadas(prev => [...prev, actionKey]);
+
+        const confirmationMsg: ChatMessage = {
+          id: (Date.now() + 2).toString(),
+          sender: 'assistant',
+          text: res.message,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, confirmationMsg]);
+
+        if (res.success && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('fundamiga:recargar-datos'));
+          setTimeout(() => {
+            window.dispatchEvent(new CustomEvent('fundamiga:desplazar-a-trabajador', {
+              detail: { cedula: action.payload.persona?.cedula, nombre: action.payload.persona?.nombre }
+            }));
+          }, 350);
+        }
+      } catch (err: any) {
+        const errorMsg: ChatMessage = {
+          id: (Date.now() + 2).toString(),
+          sender: 'assistant',
+          text: `❌ Error al registrar liquidación: ${err?.message || 'Error inesperado'}`,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, errorMsg]);
+      } finally {
+        setEjecutandoAccionId(null);
+      }
+      return;
+    }
+
+    if (action.tipo === 'PAGO_MASIVO' && action.payload) {
+      const actionKey = `pago-masivo-${actIdx}`;
+      if (accionesEjecutadas.includes(actionKey) || ejecutandoAccionId === actionKey) return;
+
+      setEjecutandoAccionId(actionKey);
+      try {
+        const res = await executePagoMasivo(action.payload);
+        setAccionesEjecutadas(prev => [...prev, actionKey]);
+
+        const confirmationMsg: ChatMessage = {
+          id: (Date.now() + 2).toString(),
+          sender: 'assistant',
+          text: res.message,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, confirmationMsg]);
+
+        if (res.success && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('fundamiga:recargar-datos'));
+        }
+      } catch (err: any) {
+        const errorMsg: ChatMessage = {
+          id: (Date.now() + 2).toString(),
+          sender: 'assistant',
+          text: `❌ Error al ejecutar pago masivo: ${err?.message || 'Error inesperado'}`,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, errorMsg]);
+      } finally {
+        setEjecutandoAccionId(null);
       }
       return;
     }

@@ -941,6 +941,21 @@ export const LiquidacionPersonal: React.FC = () => {
     return () => window.removeEventListener('fundamiga:recargar-datos', handler);
   }, []);
 
+  // Escuchar orden de la IA para aplicar o limpiar filtros de la tabla
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const custom = e as CustomEvent<{ cargo?: string; banco?: string; busqueda?: string }>;
+      if (custom.detail) {
+        if (custom.detail.cargo !== undefined) setFiltroCargo(custom.detail.cargo);
+        if (custom.detail.banco !== undefined) setFiltroBanco(custom.detail.banco);
+        if (custom.detail.busqueda !== undefined) setFiltroHistorial(custom.detail.busqueda);
+      }
+    };
+
+    window.addEventListener('fundamiga:aplicar-filtros', handler);
+    return () => window.removeEventListener('fundamiga:aplicar-filtros', handler);
+  }, []);
+
   const editRowRef = useRef<HTMLTableRowElement>(null);
 
   const handleTablaScroll = () => {

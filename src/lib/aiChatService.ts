@@ -4,7 +4,7 @@ import { calcularDescuentoARLPila } from '@/utils/calcularDescuentoARL';
 
 export interface ChatAction {
   label: string;
-  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO' | 'DESPLAZAR_TABLA' | 'EDITAR_EN_TABLA' | 'LIQUIDAR_TRABAJADOR' | 'PAGO_MASIVO' | 'APLICAR_FILTROS';
+  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO' | 'DESPLAZAR_TABLA' | 'EDITAR_EN_TABLA' | 'LIQUIDAR_TRABAJADOR' | 'PAGO_MASIVO' | 'APLICAR_FILTROS' | 'CREAR_TRABAJADOR' | 'NAVEGAR_RUTA';
   payload?: any;
 }
 
@@ -299,6 +299,55 @@ export async function executePagoMasivo(payload: {
   }
 }
 
+export async function executeCrearTrabajador(payload: {
+  nombre: string;
+  cedula?: string;
+  cargo?: string;
+  valor_turno?: number;
+  valor_hora_adicional?: number;
+  forma_pago?: string;
+  numero_cuenta?: string;
+}): Promise<{ success: boolean; message: string; trabajador?: any }> {
+  try {
+    const valorTurno = Number(payload.valor_turno) || 35000;
+    const valorHora = Number(payload.valor_hora_adicional) || Math.round(valorTurno / 8);
+
+    const nuevoTrabajador = {
+      nombre: payload.nombre.trim(),
+      cedula: payload.cedula ? String(payload.cedula).trim() : '',
+      cargo: payload.cargo || 'General',
+      valor_turno: valorTurno,
+      valor_hora_adicional: valorHora,
+      forma_pago: payload.forma_pago || 'Efectivo',
+      numero_cuenta: payload.numero_cuenta ? String(payload.numero_cuenta).trim() : ''
+    };
+
+    const { data, error } = await supabase
+      .from('trabajadores')
+      .insert(nuevoTrabajador)
+      .select()
+      .single();
+
+    if (error) {
+      return { success: false, message: `❌ Error al crear trabajador en Supabase: ${error.message}` };
+    }
+
+    return {
+      success: true,
+      message: `🎉 **¡Trabajador registrado exitosamente en la base de datos!**\n\n` +
+        `• 👤 **Nombre**: **${nuevoTrabajador.nombre}**\n` +
+        `• 🆔 **Cédula**: \`${nuevoTrabajador.cedula || 'Sin registrar'}\`\n` +
+        `• 🏢 **Parqueadero**: ${nuevoTrabajador.cargo}\n` +
+        `• 💰 **Valor Turno**: ${fmt(valorTurno)} | Hora Extra: ${fmt(valorHora)}\n` +
+        `• 💳 **Forma de Pago**: ${nuevoTrabajador.forma_pago} (${nuevoTrabajador.numero_cuenta || 'Sin cuenta'})\n\n` +
+        `*Ya está disponible para ser liquidado en el cuadro de nómina.*`,
+      trabajador: data
+    };
+  } catch (err: any) {
+    return { success: false, message: `❌ Error inesperado: ${err?.message || 'Error de conexión'}` };
+  }
+}
+
 export async function processAIChatMessage(message: string, context?: ChatContext): Promise<ChatResponse> {
   const cleanMsg = message.trim();
   if (!cleanMsg) return { text: 'Por favor escribe una consulta válida.' };
@@ -369,6 +418,102 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         `• 🚚 **Remesas**: Movimientos y personal asignado.\n` +
         `• 🧮 **Cálculos**: Pregúntame cómo se calculan turnos, horas extra o préstamos.\n\n` +
         `*Prueba escribiendo un nombre (ej: "carlos"), "resumen nomina" o selecciona un botón rápido arriba.*`
+    };
+  }
+
+  // ── -0.1 CREAR / AGREGAR NUEVO TRABAJADOR A LA BASE DE DATOS ───────────────
+  const esIntentoCrearTrabajador =
+    /\b(agrega|agregar|crea|crear|registra|registrar|anade|anadir|inserta|insertar)\b.*?\b(nuevo\s*(?:trabajador|empleado|persona)|trabajador\s*nuevo)\b/i.test(q) ||
+    /\b(nuevo\s*(?:trabajador|empleado|persona)|crear\s*(?:un\s*)?trabajador|agregar\s*(?:un\s*)?trabajador|registrar\s*(?:un\s*)?trabajador)\b/i.test(q) ||
+    (q.includes('nuevo trabajador') || q.includes('agregar trabajador') || q.includes('crear trabajador') || q.includes('nuevo empleado'));
+
+  if (esIntentoCrearTrabajador) {
+    // Verificar si proporcionó detalles para crearlo directamente
+    const matchCedula = q.match(/(?:cedula|cc|documento)(?:\s*(?:a|por|en|de|=|:))?\s*([0-9]{6,12})/i) || q.match(/\b([0-9]{7,11})\b/);
+    const cedulaExtraida = matchCedula ? matchCedula[1] : '';
+
+    const cargosDisponiblesCrear = [
+      'CONTRATISTAS DE ADMINISTRACION', '5 - 6', '6 - 6', 'CARTON C', 'GUACANDA',
+      'TERCERA', 'ROZO', '2 - 10', 'MAYORISTA', 'GUABINAS', 'BOLIVAR', 'REMESAS'
+    ];
+    const cargoMatch = cargosDisponiblesCrear.find(c => q.includes(c.toLowerCase()));
+
+    const numMatchTurno = q.match(/(?:turno|tarifa|diario)(?:\s*(?:de|=|:))?\s*(?:\$|\b)([0-9]{2,3}(?:[.,][0-9]{3})+|[0-9]{4,6})\b/i);
+    const turnoExtraido = numMatchTurno ? parseInt(numMatchTurno[1].replace(/[.,]/g, ''), 10) : 35000;
+
+    const mapaBancosCrear: Record<string, string> = {
+      'bancolombia': 'Bancolombia', 'nequi': 'Nequi', 'daviplata': 'Daviplata', 'davivienda': 'Davivienda',
+      'av villas': 'AV Villas', 'villas': 'AV Villas', 'bbva': 'BBVA', 'bogota': 'Banco de Bogotá',
+      'popular': 'Banco Popular', 'caja social': 'Caja Social', 'efectivo': 'Efectivo'
+    };
+    const bancoMatchKey = Object.keys(mapaBancosCrear).find(b => q.includes(b));
+    const bancoExtraido = bancoMatchKey ? mapaBancosCrear[bancoMatchKey] : 'Efectivo';
+
+    const matchCuenta = q.match(/(?:cuenta|cta|cuneta|no\.?)(?:\s*(?:a|por|en|de|=|:))?\s*([0-9]{7,25})/i);
+    const cuentaExtraida = matchCuenta ? matchCuenta[1] : '';
+
+    // Extraer nombre ignorando palabras de comando y datos
+    const palabrasIgnorarNombre = new Set([
+      'agrega', 'agregar', 'crea', 'crear', 'registra', 'registrar', 'anade', 'anadir',
+      'un', 'una', 'el', 'la', 'los', 'las', 'nuevo', 'nueva', 'trabajador', 'empleado', 'persona',
+      'a', 'al', 'de', 'del', 'con', 'en', 'por', 'cedula', 'cc', 'documento', 'parqueadero', 'cargo',
+      'turno', 'tarifa', 'cuenta', 'cta', 'cuneta', 'banco', 'dime', 'porfa', 'favor',
+      ...(cargoMatch ? cargoMatch.toLowerCase().split(/\s+/) : []),
+      ...(bancoMatchKey ? [bancoMatchKey] : [])
+    ]);
+
+    const tokensNombre = q.split(/\s+/).filter(w => w.length >= 3 && !palabrasIgnorarNombre.has(w) && !/^\d+$/.test(w));
+
+    // Si proporcionó un nombre para crearlo de una vez
+    if (tokensNombre.length > 0 && (cargoMatch || cedulaExtraida || tokensNombre.length >= 2)) {
+      const nombreCapitalizado = tokensNombre.map(w => w.charAt(0).toUpperCase() + w.slice(1)).join(' ');
+
+      return {
+        text: `📝 **Solicitud de Registro de Nuevo Trabajador**:\n\n` +
+          `• 👤 **Nombre**: **${nombreCapitalizado}**\n` +
+          `• 🆔 **Cédula**: \`${cedulaExtraida || 'Pendiente'}\`\n` +
+          `• 🏢 **Parqueadero**: ${cargoMatch || 'General'}\n` +
+          `• 💰 **Valor Turno**: ${fmt(turnoExtraido)} | Hora Extra: ${fmt(Math.round(turnoExtraido / 8))}\n` +
+          `• 💳 **Forma de Pago**: ${bancoExtraido} (${cuentaExtraida || 'Sin cuenta'})\n\n` +
+          `¿Deseas guardar a **${nombreCapitalizado}** en la base de datos de trabajadores de Fundamiga?`,
+        acciones: [
+          {
+            label: `⚡ Crear a ${tokensNombre[0]} en Supabase`,
+            tipo: 'CREAR_TRABAJADOR',
+            payload: {
+              nombre: nombreCapitalizado,
+              cedula: cedulaExtraida,
+              cargo: cargoMatch || 'General',
+              valor_turno: turnoExtraido,
+              valor_hora_adicional: Math.round(turnoExtraido / 8),
+              forma_pago: bancoExtraido,
+              numero_cuenta: cuentaExtraida
+            }
+          },
+          {
+            label: `🌐 Ir a Gestión de Trabajadores (/admin)`,
+            tipo: 'NAVEGAR_RUTA',
+            payload: '/admin'
+          }
+        ]
+      };
+    }
+
+    // Si fue solo "agrega un nuevo trabajador" sin datos
+    return {
+      text: `👤 **Registro de Nuevo Trabajador en Fundamiga**:\n\n` +
+        `Puedes registrar a un nuevo trabajador de dos formas sencillas:\n\n` +
+        `1️⃣ **Directamente por este chat**: Escribe por ejemplo:\n` +
+        `• *"Crea a Carlos Mario Gómez, cédula 1005234567, parqueadero Guabinas, turno 40000"*\n` +
+        `• *"Agrega al trabajador Pedro Pérez, cédula 98765432, parqueadero 5 - 6, Bancolombia cuenta 12345678"*\n\n` +
+        `2️⃣ **En el panel de administración**: Puedes abrir el formulario completo con un clic en el botón de abajo.`,
+      acciones: [
+        {
+          label: `🌐 Ir a Formulario de Nuevo Trabajador (/admin)`,
+          tipo: 'NAVEGAR_RUTA',
+          payload: '/admin'
+        }
+      ]
     };
   }
 

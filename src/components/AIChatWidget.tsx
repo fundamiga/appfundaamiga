@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Sparkles, X, Send, Bot, User, ChevronDown, Check, Copy, Calculator, Shield, Users, HelpCircle, RefreshCw, Zap, MapPin, Pencil } from 'lucide-react';
-import { processAIChatMessage, ChatMessage, ChatAction, executeUpdateTrabajador, executeLiquidacionDirecta, executePagoMasivo, ChatContext } from '@/lib/aiChatService';
+import { processAIChatMessage, ChatMessage, ChatAction, executeUpdateTrabajador, executeLiquidacionDirecta, executePagoMasivo, executeCrearTrabajador, ChatContext } from '@/lib/aiChatService';
 
 export default function AIChatWidget() {
   const [isOpen, setIsOpen] = useState(false);
@@ -137,6 +137,47 @@ export default function AIChatWidget() {
   const [accionesEjecutadas, setAccionesEjecutadas] = useState<string[]>([]);
 
   const handleExecuteAction = async (action: ChatAction, actIdx: number) => {
+    if (action.tipo === 'NAVEGAR_RUTA' && action.payload) {
+      if (typeof window !== 'undefined') {
+        window.location.href = action.payload;
+      }
+      return;
+    }
+
+    if (action.tipo === 'CREAR_TRABAJADOR' && action.payload) {
+      const actionKey = `crear-${actIdx}-${action.payload.nombre}`;
+      if (accionesEjecutadas.includes(actionKey) || ejecutandoAccionId === actionKey) return;
+
+      setEjecutandoAccionId(actionKey);
+      try {
+        const res = await executeCrearTrabajador(action.payload);
+        setAccionesEjecutadas(prev => [...prev, actionKey]);
+
+        const confirmationMsg: ChatMessage = {
+          id: (Date.now() + 2).toString(),
+          sender: 'assistant',
+          text: res.message,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, confirmationMsg]);
+
+        if (res.success && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('fundamiga:recargar-datos'));
+        }
+      } catch (err: any) {
+        const errorMsg: ChatMessage = {
+          id: (Date.now() + 2).toString(),
+          sender: 'assistant',
+          text: `❌ Error al crear trabajador: ${err?.message || 'Error inesperado'}`,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, errorMsg]);
+      } finally {
+        setEjecutandoAccionId(null);
+      }
+      return;
+    }
+
     if (action.tipo === 'APLICAR_FILTROS' && action.payload) {
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('fundamiga:aplicar-filtros', {

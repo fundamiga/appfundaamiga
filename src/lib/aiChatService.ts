@@ -212,16 +212,38 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     };
   }
 
+  const cargosDisponibles = [
+    'CONTRATISTAS DE ADMINISTRACION', '5 - 6', '6 - 6', 'CARTON C', 'GUACANDA',
+    'TERCERA', 'ROZO', '2 - 10', 'MAYORISTA', 'GUABINAS', 'BOLIVAR', 'REMESAS'
+  ];
+
+  const mapaBancos: Record<string, string> = {
+    'bancolombia': 'Bancolombia',
+    'nequi': 'Nequi',
+    'daviplata': 'Daviplata',
+    'davivienda': 'Davivienda',
+    'av villas': 'AV Villas',
+    'villas': 'AV Villas',
+    'bbva': 'BBVA',
+    'banco de bogota': 'Banco de Bogotá',
+    'bogota': 'Banco de Bogotá',
+    'popular': 'Banco Popular',
+    'caja social': 'Caja Social',
+    'efectivo': 'Efectivo',
+    'transferencia': 'Transferencia'
+  };
+
   const verbosModificar = [
-    'cambia', 'cambiar', 'cambiale', 'cambiales', 'cambiame',
-    'actualiza', 'actualizar', 'actualizale', 'actualizame',
-    'modifica', 'modificar', 'modificale', 'modificame',
-    'edita', 'editar', 'editale', 'editame',
-    'ponle', 'pon', 'poner', 'ponme',
-    'asigna', 'asignar', 'asignale',
-    'fija', 'fijar', 'fijale',
-    'ajusta', 'ajustar', 'ajustale',
-    'pasa', 'pasar', 'pasale'
+    'cambia', 'cambiar', 'cambiale', 'cambiales', 'cambiame', 'cambialo', 'cambiala', 'cambielos', 'cambielas', 'cambielo', 'cambiela', 'cambien', 'cambienlo',
+    'actualiza', 'actualizar', 'actualizale', 'actualizame', 'actualizalo', 'actualizala', 'actualicelo', 'actualicela',
+    'modifica', 'modificar', 'modificale', 'modificame', 'modificalo', 'modificala', 'modifiquelo', 'modifiquela',
+    'edita', 'editar', 'editale', 'editame', 'editalo', 'editala', 'editele', 'editelo',
+    'ponle', 'pon', 'poner', 'ponme', 'ponlo', 'ponla', 'pongale', 'pongalo', 'pongala',
+    'asigna', 'asignar', 'asignale', 'asignalor', 'asignalo', 'asignala', 'asigne',
+    'fija', 'fijar', 'fijale', 'fijalo', 'fijala',
+    'ajusta', 'ajustar', 'ajustale', 'ajustalo', 'ajustala',
+    'pasa', 'pasar', 'pasale', 'pasalo', 'pasala', 'paselos', 'paselas', 'paselo', 'pasela', 'pasen', 'pasenlo',
+    'mueve', 'mover', 'muevelo', 'muevela', 'muevele', 'traslada', 'trasladar', 'trasladalo', 'trasladala'
   ];
 
   const esIntentoModificar =
@@ -229,7 +251,14 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     q.includes('modifica los datos') || q.includes('modificar los datos') ||
     q.includes('cambiar los datos') || q.includes('cambia los datos') ||
     q.includes('editar a') || q.includes('edita a') ||
-    q.includes('modificar a') || q.includes('modifica a');
+    q.includes('modificar a') || q.includes('modifica a') ||
+    // Si venimos hablando de un trabajador, cualquier mención a cargo, banco, cuenta o tarifa aplica directamente
+    (Boolean(context?.ultimoTrabajador) && (
+      cargosDisponibles.some(c => q.includes(c.toLowerCase())) ||
+      q.includes('banco') || q.includes('cuenta') || q.includes('turno') || q.includes('tarifa') ||
+      Object.keys(mapaBancos).some(b => q.includes(b)) ||
+      /\b\d{7,25}\b/.test(q)
+    ));
 
   if (esIntentoModificar || context?.campoPendiente) {
     const { data: todosTrabajadores } = await supabase.from('trabajadores').select('*');
@@ -260,24 +289,8 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
 
       // B. Banco / Forma de pago
       if (!campoDB) {
-        const mapaBancos: Record<string, string> = {
-          'bancolombia': 'Bancolombia',
-          'nequi': 'Nequi',
-          'daviplata': 'Daviplata',
-          'davivienda': 'Davivienda',
-          'av villas': 'AV Villas',
-          'villas': 'AV Villas',
-          'bbva': 'BBVA',
-          'banco de bogota': 'Banco de Bogotá',
-          'bogota': 'Banco de Bogotá',
-          'popular': 'Banco Popular',
-          'caja social': 'Caja Social',
-          'efectivo': 'Efectivo',
-          'transferencia': 'Transferencia'
-        };
-
         const bancoEncontrado = Object.keys(mapaBancos).find(b => q.includes(b));
-        if (bancoEncontrado && (q.includes('banco') || q.includes('pago') || q.includes('forma') || q.includes('medio') || q.includes(`a ${bancoEncontrado}`) || q.includes(`por ${bancoEncontrado}`) || q.includes('cambia') || q.includes('cambiar'))) {
+        if (bancoEncontrado && (q.includes('banco') || q.includes('pago') || q.includes('forma') || q.includes('medio') || q.includes(`a ${bancoEncontrado}`) || q.includes(`por ${bancoEncontrado}`) || q.includes('cambia') || q.includes('cambiar') || q.includes('pas') || Boolean(context?.ultimoTrabajador))) {
           campoDB = 'forma_pago';
           campoLabel = 'Forma de Pago';
           valorNuevo = mapaBancos[bancoEncontrado];
@@ -321,12 +334,8 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         }
       }
 
-      // F. Parqueadero / Cargo (soporta "cambia aparquedero a guabinas", "pasa a guabinas", etc.)
+      // F. Parqueadero / Cargo (soporta "pasalo a guacanda", "cambialo a guacanda", "a guabinas", etc.)
       if (!campoDB) {
-        const cargosDisponibles = [
-          'CONTRATISTAS DE ADMINISTRACION', '5 - 6', '6 - 6', 'CARTON C', 'GUACANDA',
-          'TERCERA', 'ROZO', '2 - 10', 'MAYORISTA', 'GUABINAS', 'BOLIVAR', 'REMESAS'
-        ];
         const cargoMatch = cargosDisponibles.find(c => q.includes(c.toLowerCase()));
         if (cargoMatch) {
           campoDB = 'cargo';
@@ -338,12 +347,19 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
       // 2. Identificar al trabajador
       let trabajadorEncontrado: any = null;
 
-      // Extraer palabras de la consulta ignorando verbos, palabras de control, cargos y bancos
+      // Extraer palabras de la consulta ignorando verbos, pronombres, palabras de control, cargos y bancos
       const palabrasControl = new Set([
-        'cambia', 'cambiar', 'cambiale', 'cambiales', 'cambiame', 'actualiza', 'actualizar',
-        'actualizale', 'actualizame', 'modifica', 'modificar', 'modificale', 'modificame',
-        'edita', 'editar', 'editale', 'editame', 'ponle', 'pon', 'poner', 'asigna', 'asignale',
-        'pasa', 'pasar', 'pasale', 'la', 'el', 'los', 'las', 'a', 'al', 'de', 'del', 'en', 'por', 'para',
+        'cambia', 'cambiar', 'cambiale', 'cambiales', 'cambiame', 'cambialo', 'cambiala', 'cambielos', 'cambielas', 'cambielo', 'cambiela', 'cambien', 'cambienlo',
+        'actualiza', 'actualizar', 'actualizale', 'actualizame', 'actualizalo', 'actualizala', 'actualicelo', 'actualicela',
+        'modifica', 'modificar', 'modificale', 'modificame', 'modificalo', 'modificala', 'modifiquelo', 'modifiquela',
+        'edita', 'editar', 'editale', 'editame', 'editalo', 'editala', 'editele', 'editelo',
+        'ponle', 'pon', 'poner', 'ponme', 'ponlo', 'ponla', 'pongale', 'pongalo', 'pongala',
+        'asigna', 'asignar', 'asignale', 'asignalor', 'asignalo', 'asignala', 'asigne',
+        'fija', 'fijar', 'fijale', 'fijalo', 'fijala',
+        'ajusta', 'ajustar', 'ajustale', 'ajustalo', 'ajustala',
+        'pasa', 'pasar', 'pasale', 'pasalo', 'pasala', 'paselos', 'paselas', 'paselo', 'pasela', 'pasen', 'pasenlo',
+        'mueve', 'mover', 'muevelo', 'muevela', 'muevele', 'traslada', 'trasladar', 'trasladalo', 'trasladala',
+        'la', 'el', 'los', 'las', 'a', 'al', 'de', 'del', 'en', 'por', 'para',
         'cuenta', 'cta', 'cuneta', 'cedula', 'cc', 'documento', 'banco', 'turno', 'tarifa',
         'hora', 'extra', 'adicional', 'parqueadero', 'cargo', 'datos', 'etc', 'asi', 'un',
         'una', 'su', 'nuevo', 'nueva', 'favor', 'dime', 'quiero', 'que',

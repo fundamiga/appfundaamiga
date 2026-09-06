@@ -119,6 +119,13 @@ export default function AdminPage() {
 
   useEffect(() => { cargarPersonas(); }, [cargarPersonas]);
 
+  // Recargar en vivo cuando la IA realice modificaciones
+  useEffect(() => {
+    const handler = () => { cargarPersonas(); };
+    window.addEventListener('fundamiga:recargar-datos', handler);
+    return () => window.removeEventListener('fundamiga:recargar-datos', handler);
+  }, [cargarPersonas]);
+
   const validar = () => {
     const e: typeof errores = {};
     if (!form.nombre.trim()) e.nombre = 'El nombre es obligatorio';

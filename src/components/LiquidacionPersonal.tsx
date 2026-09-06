@@ -876,6 +876,71 @@ export const LiquidacionPersonal: React.FC = () => {
     return () => window.removeEventListener('fundamiga:desplazar-a-trabajador', handler);
   }, []);
 
+  // Escuchar orden de la IA para abrir el editor en línea de una fila de la tabla
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const custom = e as CustomEvent<{ cedula?: string; nombre?: string }>;
+      const cedula = custom.detail?.cedula;
+      const nombre = custom.detail?.nombre;
+      if (!cedula && !nombre) return;
+
+      setFiltroHistorial('');
+      setFiltroCargo('');
+      setFiltroBanco('');
+      setFiltroQuincena('');
+
+      setTimeout(() => {
+        const idx = historialActivo.findIndex(h =>
+          (cedula && String(h.persona?.cedula || '').trim() === String(cedula).trim()) ||
+          (nombre && String(h.persona?.nombre || '').toLowerCase().includes(nombre.toLowerCase()))
+        );
+        if (idx !== -1) {
+          abrirEditar(idx);
+        }
+      }, 250);
+    };
+
+    window.addEventListener('fundamiga:abrir-edicion-trabajador', handler);
+    return () => window.removeEventListener('fundamiga:abrir-edicion-trabajador', handler);
+  }, [historialActivo]);
+
+  // Escuchar recarga de datos en vivo tras una modificación ejecutada por la IA
+  useEffect(() => {
+    const handler = () => {
+      supabase.from('trabajadores').select('*').order('nombre').then(({ data }) => {
+        if (data && data.length > 0) {
+          setPersonasActivas(data.map((p: PersonaDB) => ({
+            cedula: p.cedula, nombre: p.nombre,
+            valorTurno: p.valor_turno, valorHoraAdicional: p.valor_hora_adicional,
+            formaPago: p.forma_pago, cargo: p.cargo,
+            numeroCuenta: p.numero_cuenta || '',
+          })));
+        }
+      });
+
+      supabase.from('historial_liquidaciones').select('*').order('creado_at').then(({ data }) => {
+        if (data && data.length > 0) {
+          supabase.from('trabajadores').select('cedula, numero_cuenta').then(({ data: trabajadores }) => {
+            const cuentaMap = new Map((trabajadores || []).map((t: any) => [t.cedula, t.numero_cuenta || '']));
+            setHistorial(data.map((row: any) => ({
+              ...row,
+              persona: {
+                ...row.persona,
+                numeroCuenta: cuentaMap.has(row.persona.cedula)
+                  ? cuentaMap.get(row.persona.cedula)
+                  : (row.persona.numeroCuenta || row.persona.cuentaDavivienda || ''),
+              },
+              _id: row.id,
+            })));
+          });
+        }
+      });
+    };
+
+    window.addEventListener('fundamiga:recargar-datos', handler);
+    return () => window.removeEventListener('fundamiga:recargar-datos', handler);
+  }, []);
+
   const editRowRef = useRef<HTMLTableRowElement>(null);
 
   const handleTablaScroll = () => {

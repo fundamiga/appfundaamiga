@@ -4,7 +4,7 @@ import { calcularDescuentoARLPila } from '@/utils/calcularDescuentoARL';
 
 export interface ChatAction {
   label: string;
-  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO' | 'DESPLAZAR_TABLA';
+  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO' | 'DESPLAZAR_TABLA' | 'EDITAR_EN_TABLA';
   payload?: any;
 }
 
@@ -29,8 +29,10 @@ export async function executeUpdateTrabajador(payload: {
   valorNuevo: any;
   nombre: string;
   campoLabel?: string;
+  cedulaAnterior?: string;
 }): Promise<{ success: boolean; message: string }> {
   try {
+    // 1. Actualizar en trabajadores
     const { error } = await supabase
       .from('trabajadores')
       .update({ [payload.campo]: payload.valorNuevo })
@@ -43,6 +45,51 @@ export async function executeUpdateTrabajador(payload: {
       };
     }
 
+    // 2. Sincronizar en historial_liquidaciones si la persona ya está en el cuadro de nómina
+    try {
+      const { data: histRows } = await supabase.from('historial_liquidaciones').select('*');
+      if (histRows && histRows.length > 0) {
+        for (const row of histRows) {
+          const matchCedula = payload.cedulaAnterior && String(row.persona?.cedula || '').trim() === String(payload.cedulaAnterior).trim();
+          const matchNombre = String(row.persona?.nombre || '').toLowerCase().trim() === payload.nombre.toLowerCase().trim();
+          if (matchCedula || matchNombre) {
+            const updatedPersona = { ...row.persona };
+            if (payload.campo === 'numero_cuenta') {
+              updatedPersona.numeroCuenta = payload.valorNuevo;
+            } else if (payload.campo === 'cedula') {
+              updatedPersona.cedula = payload.valorNuevo;
+            } else if (payload.campo === 'forma_pago') {
+              updatedPersona.formaPago = payload.valorNuevo;
+            } else if (payload.campo === 'cargo') {
+              updatedPersona.cargo = payload.valorNuevo;
+            } else if (payload.campo === 'valor_turno') {
+              updatedPersona.valorTurno = payload.valorNuevo;
+            } else if (payload.campo === 'valor_hora_adicional') {
+              updatedPersona.valorHoraAdicional = payload.valorNuevo;
+            }
+
+            await supabase
+              .from('historial_liquidaciones')
+              .update({ persona: updatedPersona })
+              .eq('id', row.id);
+          }
+        }
+      }
+    } catch (errSync) {
+      console.warn('Sincronización secundaria en historial_liquidaciones:', errSync);
+    }
+
+    // 3. Notificar a las pantallas activas para recargar datos y enfocar la fila
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('fundamiga:recargar-datos'));
+      window.dispatchEvent(new CustomEvent('fundamiga:desplazar-a-trabajador', {
+        detail: {
+          cedula: payload.campo === 'cedula' ? payload.valorNuevo : payload.cedulaAnterior,
+          nombre: payload.nombre
+        }
+      }));
+    }
+
     const valorMostrar = typeof payload.valorNuevo === 'number'
       ? fmt(payload.valorNuevo)
       : `\`${payload.valorNuevo}\``;
@@ -51,7 +98,8 @@ export async function executeUpdateTrabajador(payload: {
       success: true,
       message: `✅ **¡Dato actualizado exitosamente en Supabase!**\n\n` +
         `• 👤 **Trabajador**: **${payload.nombre}**\n` +
-        `• 🔄 **${payload.campoLabel || payload.campo}**: Guardado como ${valorMostrar}.`
+        `• 🔄 **${payload.campoLabel || payload.campo}**: Guardado como ${valorMostrar}.\n` +
+        `• 📋 *Tanto la base de datos como el cuadro de nómina se han sincronizado en vivo.*`
     };
   } catch (err: any) {
     return {
@@ -128,53 +176,108 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
   }
 
   // ── 0.1 MODIFICACIÓN DE DATOS (SOLO A PETICIÓN EXPLÍCITA) ───────────────────
-  if (
-    q.includes('puedes modificar') || q.includes('como modificar') ||
-    q.includes('como cambiar datos') || q.includes('puedes cambiar datos') ||
-    q.includes('editar datos') || q.includes('modificar datos')
-  ) {
+  // Solo responder con mensaje de ayuda si NO se menciona a ninguna persona ni se especifica una acción concreta
+  const esPreguntaInformativaModificar =
+    (q === 'modificar datos' || q === 'editar datos' || q === 'como modificar' || q === 'como cambiar datos' || q === 'puedes modificar' || q === 'puedes cambiar datos') ||
+    (/^(puedes|como puedo|como se puede)\s*(modificar|cambiar|editar)\s*(datos|trabajadores|personas)?\??$/i.test(q));
+
+  if (esPreguntaInformativaModificar) {
     return {
       text: `🛠️ **Sí, puedo buscar y modificar datos del personal rápidamente.**\n\n` +
-        `Para proteger la nómina, **solo realizo cambios si tú me lo pides con datos específicos** y siempre te mostraré una vista previa con un botón de confirmación antes de guardar en Supabase.\n\n` +
+        `Para proteger la nómina, **te ubicaré directamente en la fila de la persona en la tabla** y siempre te mostraré una confirmación antes de guardar cambios en Supabase.\n\n` +
         `**Ejemplos de lo que puedes pedirme:**\n` +
-        `• *"Cambia la cuenta de Carlos a 100523489"*\n` +
+        `• *"Modifica los datos de Donella"*\n` +
+        `• *"Cámbiale a Juan Pedro la cuenta a 0550018400135358"*\n` +
+        `• *"Cámbiale la cédula a Carlos por 100523489"*\n` +
         `• *"Actualiza el valor de turno de Diana a 65000"*\n` +
         `• *"Cambia el banco de Juan a Nequi"*\n` +
-        `• *"Actualiza la hora adicional de Pedro a 8500"*\n` +
         `• *"Pasa a María al parqueadero Carton C"*`
     };
   }
 
-  const verbosModificar = ['cambia', 'cambiar', 'actualiza', 'actualizar', 'modifica', 'modificar', 'ponle', 'pon', 'asigna', 'asignar', 'fija', 'fijar', 'ajusta', 'ajustar', 'pasa', 'pasar'];
-  const esIntentoModificar = verbosModificar.some(v => new RegExp(`\\b${v}\\b`, 'i').test(q));
+  const verbosModificar = [
+    'cambia', 'cambiar', 'cambiale', 'cambiales', 'cambiame',
+    'actualiza', 'actualizar', 'actualizale', 'actualizame',
+    'modifica', 'modificar', 'modificale', 'modificame',
+    'edita', 'editar', 'editale', 'editame',
+    'ponle', 'pon', 'poner', 'ponme',
+    'asigna', 'asignar', 'asignale',
+    'fija', 'fijar', 'fijale',
+    'ajusta', 'ajustar', 'ajustale',
+    'pasa', 'pasar', 'pasale'
+  ];
+
+  const esIntentoModificar =
+    verbosModificar.some(v => new RegExp(`\\b${v}\\b`, 'i').test(q)) ||
+    q.includes('modifica los datos') || q.includes('modificar los datos') ||
+    q.includes('cambiar los datos') || q.includes('cambia los datos') ||
+    q.includes('editar a') || q.includes('edita a') ||
+    q.includes('modificar a') || q.includes('modifica a');
 
   if (esIntentoModificar) {
     const { data: todosTrabajadores } = await supabase.from('trabajadores').select('*');
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
 
     if (todosTrabajadores && todosTrabajadores.length > 0) {
-      // 1. Identificar al trabajador
+      // 1. Identificar al trabajador con tolerancia a orden de nombres y dedazos
       let trabajadorEncontrado: any = null;
 
-      // Prioridad 1: Búsqueda por cédula si hay dígitos largos en la consulta
+      // Prioridad 1: Búsqueda por cédula si hay dígitos de 6 a 11 números en la consulta y corresponden a alguien existente
       const cedulaEnQuery = q.match(/\b\d{6,11}\b/);
       if (cedulaEnQuery) {
-        trabajadorEncontrado = todosTrabajadores.find(t => t.cedula === cedulaEnQuery[0]);
+        const porCedula = todosTrabajadores.find(t => String(t.cedula).trim() === cedulaEnQuery[0]);
+        // Solo si la query no dice explícitamente "cedula a 12345"
+        if (porCedula && !/cedula\s*(?:a|por|en|=)?\s*\d+/i.test(q)) {
+          trabajadorEncontrado = porCedula;
+        }
       }
 
-      // Prioridad 2: Coincidencia por nombre completo o partes de nombre
+      // Prioridad 2: Coincidencia inteligente por nombre con tolerancia a dedazos (ej: perdro -> pedro)
       if (!trabajadorEncontrado) {
+        // Extraer palabras de la consulta ignorando verbos y palabras de control
+        const palabrasControl = new Set([
+          'cambia', 'cambiar', 'cambiale', 'cambiales', 'cambiame', 'actualiza', 'actualizar',
+          'actualizale', 'actualizame', 'modifica', 'modificar', 'modificale', 'modificame',
+          'edita', 'editar', 'editale', 'editame', 'ponle', 'pon', 'poner', 'asigna', 'pasa',
+          'pasar', 'la', 'el', 'los', 'las', 'a', 'al', 'de', 'del', 'en', 'por', 'para',
+          'cuenta', 'cta', 'cuneta', 'cedula', 'cc', 'documento', 'banco', 'turno', 'tarifa',
+          'hora', 'extra', 'adicional', 'parqueadero', 'cargo', 'datos', 'etc', 'asi', 'un',
+          'una', 'su', 'nuevo', 'nueva', 'favor', 'dime', 'quiero', 'que'
+        ]);
+
+        const tokensNombre = q.split(/\s+/).filter(w => w.length >= 3 && !palabrasControl.has(w));
+
         const candidatos = todosTrabajadores.map(t => {
           const tNorm = t.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
           let score = 0;
-          if (q.includes(tNorm)) {
-            score = 100;
+
+          if (tokensNombre.length > 0 && tokensNombre.every(tk => tNorm.includes(tk))) {
+            score = 100 + tokensNombre.length * 10;
           } else {
-            const tokens = tNorm.split(/\s+/).filter((k: string) => k.length >= 3);
-            for (const tk of tokens) {
-              const reg = new RegExp(`\\b${tk}\\b`, 'i');
-              if (reg.test(q)) score += 10;
+            const palabrasTrabajador = tNorm.split(/\s+/).filter((w: string) => w.length >= 3);
+            for (const tk of tokensNombre) {
+              if (palabrasTrabajador.includes(tk)) {
+                score += 20;
+              } else {
+                // Tolerancia a 1 letra de diferencia (dedazo como perdro -> pedro)
+                for (const pw of palabrasTrabajador) {
+                  if (Math.abs(pw.length - tk.length) <= 1) {
+                    let diff = 0;
+                    const minLen = Math.min(pw.length, tk.length);
+                    for (let i = 0; i < minLen; i++) {
+                      if (pw[i] !== tk[i]) diff++;
+                    }
+                    diff += Math.abs(pw.length - tk.length);
+                    if (diff <= 1) {
+                      score += 15;
+                      break;
+                    }
+                  }
+                }
+              }
             }
           }
+
           return { t, score };
         }).filter(c => c.score > 0).sort((a, b) => b.score - a.score);
 
@@ -182,50 +285,83 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
           trabajadorEncontrado = candidatos[0].t;
         } else if (candidatos.length > 1 && candidatos[0].score > candidatos[1].score) {
           trabajadorEncontrado = candidatos[0].t;
-        } else if (candidatos.length > 1 && candidatos[0].score === candidatos[1].score) {
-          const nombres = candidatos.slice(0, 3).map(c => `• **${c.t.nombre}** (C.C. ${c.t.cedula}) — ${c.t.cargo}`).join('\n');
-          return {
-            text: `⚠️ Encontré más de un trabajador que coincide con esa búsqueda:\n\n${nombres}\n\nPor favor especifica su nombre completo o número de cédula para modificar el dato con total seguridad.`
-          };
+        } else if (candidatos.length > 1 && candidatos[0].score === candidatos[1].score && candidatos[0].score >= 20) {
+          trabajadorEncontrado = candidatos[0].t;
         }
       }
 
       if (trabajadorEncontrado) {
+        // Verificar si la persona está actualmente en el cuadro de nómina
+        const enNomina = (historial || []).find(h => String(h.persona?.cedula || '').trim() === String(trabajadorEncontrado.cedula).trim());
+
         // 2. Identificar el campo y el nuevo valor
         let campoDB = '';
         let campoLabel = '';
         let valorNuevo: any = null;
 
-        // A. Banco / Forma de pago
-        const mapaBancos: Record<string, string> = {
-          'bancolombia': 'Bancolombia',
-          'nequi': 'Nequi',
-          'daviplata': 'Daviplata',
-          'davivienda': 'Davivienda',
-          'av villas': 'AV Villas',
-          'villas': 'AV Villas',
-          'efectivo': 'Efectivo',
-          'transferencia': 'Transferencia'
-        };
-
-        const bancoEncontrado = Object.keys(mapaBancos).find(b => q.includes(b));
-        if (bancoEncontrado && (q.includes('banco') || q.includes('pago') || q.includes('forma') || q.includes('medio') || q.includes(`a ${bancoEncontrado}`) || q.includes(`por ${bancoEncontrado}`))) {
-          campoDB = 'forma_pago';
-          campoLabel = 'Forma de Pago';
-          valorNuevo = mapaBancos[bancoEncontrado];
-        }
-
-        // B. Valor Hora Adicional
-        if (!campoDB && (q.includes('hora') || q.includes('extra') || q.includes('adicional'))) {
-          const numMatch = q.match(/(?:\$|\b)([0-9]{1,2}(?:[.,][0-9]{3})+|[0-9]{4,5})\b/);
-          if (numMatch) {
-            campoDB = 'valor_hora_adicional';
-            campoLabel = 'Valor Hora Adicional';
-            valorNuevo = parseInt(numMatch[1].replace(/[.,]/g, ''), 10);
+        // A. Cédula
+        if (q.includes('cedula') || q.includes('cc') || q.includes('documento') || q.includes('identificacion')) {
+          const matchCedula = q.match(/(?:cedula|cc|documento|identificacion)(?:\s*(?:a|por|en|de|=|:))?\s*([0-9]{6,12})/i);
+          if (matchCedula) {
+            campoDB = 'cedula';
+            campoLabel = 'Número de Cédula';
+            valorNuevo = matchCedula[1];
+          } else {
+            const nums = q.match(/\b([0-9]{6,12})\b/g) || [];
+            const nuevaCed = nums.find(n => n !== trabajadorEncontrado.cedula);
+            if (nuevaCed) {
+              campoDB = 'cedula';
+              campoLabel = 'Número de Cédula';
+              valorNuevo = nuevaCed;
+            }
           }
         }
 
-        // C. Valor Turno
+        // B. Banco / Forma de pago
+        if (!campoDB) {
+          const mapaBancos: Record<string, string> = {
+            'bancolombia': 'Bancolombia',
+            'nequi': 'Nequi',
+            'daviplata': 'Daviplata',
+            'davivienda': 'Davivienda',
+            'av villas': 'AV Villas',
+            'villas': 'AV Villas',
+            'bbva': 'BBVA',
+            'banco de bogota': 'Banco de Bogotá',
+            'bogota': 'Banco de Bogotá',
+            'popular': 'Banco Popular',
+            'caja social': 'Caja Social',
+            'efectivo': 'Efectivo',
+            'transferencia': 'Transferencia'
+          };
+
+          const bancoEncontrado = Object.keys(mapaBancos).find(b => q.includes(b));
+          if (bancoEncontrado && (q.includes('banco') || q.includes('pago') || q.includes('forma') || q.includes('medio') || q.includes(`a ${bancoEncontrado}`) || q.includes(`por ${bancoEncontrado}`))) {
+            campoDB = 'forma_pago';
+            campoLabel = 'Forma de Pago';
+            valorNuevo = mapaBancos[bancoEncontrado];
+          }
+        }
+
+        // C. Número de Cuenta
+        if (!campoDB && (q.includes('cuenta') || q.includes('cta') || q.includes('cuneta') || q.includes('numero') || q.includes('no.') || q.includes('celular'))) {
+          const matchCuenta = q.match(/(?:cuenta|cta|cuneta|numero|no\.?|celular)(?:\s*(?:a|por|en|de|=|:))?\s*([0-9]{7,25})/i);
+          if (matchCuenta) {
+            campoDB = 'numero_cuenta';
+            campoLabel = 'Número de Cuenta';
+            valorNuevo = matchCuenta[1];
+          } else {
+            const nums = q.match(/\b([0-9]{7,25})\b/g) || [];
+            const cuentaCandidata = nums.find(n => n !== trabajadorEncontrado.cedula);
+            if (cuentaCandidata) {
+              campoDB = 'numero_cuenta';
+              campoLabel = 'Número de Cuenta';
+              valorNuevo = cuentaCandidata;
+            }
+          }
+        }
+
+        // D. Valor Turno
         if (!campoDB && (q.includes('turno') || q.includes('tarifa') || q.includes('sueldo') || q.includes('diario'))) {
           const numMatch = q.match(/(?:\$|\b)([0-9]{2,3}(?:[.,][0-9]{3})+|[0-9]{5,6})\b/);
           if (numMatch) {
@@ -235,36 +371,48 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
           }
         }
 
-        // D. Parqueadero / Cargo
-        const cargosDisponibles = [
-          'CONTRATISTAS DE ADMINISTRACION', '5 - 6', '6 - 6', 'CARTON C', 'GUACANDA',
-          'TERCERA', 'ROZO', '2 - 10', 'MAYORISTA', 'GUABINAS', 'BOLIVAR', 'REMESAS'
-        ];
-        if (!campoDB && (q.includes('parqueadero') || q.includes('cargo') || q.includes('lugar') || q.includes('pasa') || q.includes('pasar') || q.includes('asigna') || q.includes('asignar'))) {
-          const cargoMatch = cargosDisponibles.find(c => q.includes(c.toLowerCase()));
-          if (cargoMatch) {
-            campoDB = 'cargo';
-            campoLabel = 'Parqueadero / Cargo';
-            valorNuevo = cargoMatch;
+        // E. Valor Hora Adicional
+        if (!campoDB && (q.includes('hora') || q.includes('extra') || q.includes('adicional') || q.includes('recargo'))) {
+          const numMatch = q.match(/(?:\$|\b)([0-9]{1,2}(?:[.,][0-9]{3})+|[0-9]{4,5})\b/);
+          if (numMatch) {
+            campoDB = 'valor_hora_adicional';
+            campoLabel = 'Valor Hora Adicional';
+            valorNuevo = parseInt(numMatch[1].replace(/[.,]/g, ''), 10);
           }
         }
 
-        // E. Número de Cuenta
-        if (!campoDB && (q.includes('cuenta') || q.includes('cta') || q.includes('numero') || q.includes('no.'))) {
-          const nums = q.match(/\b([0-9]{5,25})\b/g) || [];
-          const cuentaCandidata = nums.find(n => n !== trabajadorEncontrado.cedula);
-          if (cuentaCandidata) {
-            campoDB = 'numero_cuenta';
-            campoLabel = 'Número de Cuenta';
-            valorNuevo = cuentaCandidata;
+        // F. Parqueadero / Cargo
+        if (!campoDB) {
+          const cargosDisponibles = [
+            'CONTRATISTAS DE ADMINISTRACION', '5 - 6', '6 - 6', 'CARTON C', 'GUACANDA',
+            'TERCERA', 'ROZO', '2 - 10', 'MAYORISTA', 'GUABINAS', 'BOLIVAR', 'REMESAS'
+          ];
+          if (q.includes('parqueadero') || q.includes('cargo') || q.includes('lugar') || q.includes('pasa') || q.includes('pasar') || q.includes('asigna') || q.includes('asignar')) {
+            const cargoMatch = cargosDisponibles.find(c => q.includes(c.toLowerCase()));
+            if (cargoMatch) {
+              campoDB = 'cargo';
+              campoLabel = 'Parqueadero / Cargo';
+              valorNuevo = cargoMatch;
+            }
           }
         }
 
+        // CASO 1: Se especificó campo y nuevo valor
         if (campoDB && valorNuevo !== null) {
           if (trabajadorEncontrado[campoDB] === valorNuevo) {
             const valorActualFmt = typeof valorNuevo === 'number' ? fmt(valorNuevo) : `\`${valorNuevo}\``;
             return {
-              text: `ℹ️ **${trabajadorEncontrado.nombre}** ya tiene registrado ese mismo dato en **${campoLabel}** (${valorActualFmt}). No es necesario realizar ningún cambio.`
+              text: `ℹ️ **${trabajadorEncontrado.nombre}** ya tiene registrado ese mismo dato en **${campoLabel}** (${valorActualFmt}). No es necesario realizar ningún cambio.`,
+              acciones: [
+                {
+                  label: `📍 Ubicar a ${trabajadorEncontrado.nombre.split(' ')[0]} en la tabla`,
+                  tipo: 'DESPLAZAR_TABLA',
+                  payload: {
+                    cedula: trabajadorEncontrado.cedula,
+                    nombre: trabajadorEncontrado.nombre
+                  }
+                }
+              ]
             };
           }
 
@@ -281,13 +429,14 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
             : valorNuevo;
 
           return {
-            text: `📝 **Solicitud de Modificación de Datos**\n\n` +
+            text: `📍 *Te he ubicado en la fila de ${trabajadorEncontrado.nombre} en la tabla.*\n\n` +
+              `📝 **Solicitud de Modificación de Datos:**\n\n` +
               `• 👤 **Trabajador**: **${trabajadorEncontrado.nombre}** (C.C. \`${trabajadorEncontrado.cedula}\`)\n` +
               `• 🏢 **Parqueadero**: ${trabajadorEncontrado.cargo || 'No asignado'}\n` +
               `• 🔄 **Campo a modificar**: **${campoLabel}**\n` +
               `• ⚠️ **Valor actual**: ${valorAnteriorFmt}\n` +
               `• ✨ **Nuevo valor**: ${valorNuevoFmt}\n\n` +
-              `*Por seguridad, presiona el botón a continuación para guardar el cambio en Supabase:*`,
+              `*Presiona el botón a continuación para aplicar el cambio:*`,
             acciones: [
               {
                 label: `⚡ Confirmar cambio: ${campoLabel} → ${valorNuevoBoton}`,
@@ -298,21 +447,62 @@ async function processFundamigaQuery(query: string): Promise<ChatResponse> {
                   campo: campoDB,
                   campoLabel: campoLabel,
                   valorNuevo: valorNuevo,
-                  valorAnterior: trabajadorEncontrado[campoDB]
+                  valorAnterior: trabajadorEncontrado[campoDB],
+                  cedulaAnterior: trabajadorEncontrado.cedula
+                }
+              },
+              {
+                label: `📍 Ubicar a ${trabajadorEncontrado.nombre.split(' ')[0]} en la tabla`,
+                tipo: 'DESPLAZAR_TABLA',
+                payload: {
+                  cedula: trabajadorEncontrado.cedula,
+                  nombre: trabajadorEncontrado.nombre
                 }
               }
             ]
           };
-        } else {
-          return {
-            text: `⚠️ Identifiqué al trabajador **${trabajadorEncontrado.nombre}**, pero no entendí con claridad qué campo o valor deseas modificarle.\n\n` +
-              `Prueba escribiendo por ejemplo:\n` +
-              `• *"Cambia la cuenta de ${trabajadorEncontrado.nombre.split(' ')[0]} a 05500123456"*\n` +
-              `• *"Actualiza el valor de turno de ${trabajadorEncontrado.nombre.split(' ')[0]} a 65000"*\n` +
-              `• *"Cambia el banco de ${trabajadorEncontrado.nombre.split(' ')[0]} a Nequi"*\n` +
-              `• *"Pasa a ${trabajadorEncontrado.nombre.split(' ')[0]} al parqueadero Carton C"*`
-          };
         }
+
+        // CASO 2: Se identificó a la persona pero no el campo/valor exacto (ej: "modifica los datos de Donella")
+        // Desplazamos a la persona, abrimos el editor en la tabla y le damos opciones claras
+        const turnos = enNomina ? (enNomina.form?.diasTurno || 0) : 0;
+        const neto = enNomina ? (enNomina.resultado?.neto || 0) : 0;
+        const estadoIcon = enNomina ? (enNomina.estado === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente') : '';
+
+        return {
+          text: `📍 **He ubicado a ${trabajadorEncontrado.nombre} en la tabla.**\n\n` +
+            `👤 **Datos actuales de ${trabajadorEncontrado.nombre}**:\n` +
+            `• 🆔 **Cédula**: \`${trabajadorEncontrado.cedula}\`\n` +
+            `• 🏢 **Parqueadero**: ${trabajadorEncontrado.cargo || 'No asignado'}\n` +
+            `• 💳 **Forma de Pago**: ${trabajadorEncontrado.forma_pago || 'No definida'} | **Cuenta**: ${trabajadorEncontrado.numero_cuenta ? `\`${trabajadorEncontrado.numero_cuenta}\`` : '*Sin registrar*'}\n` +
+            `• 💰 **Tarifas**: Turno ${fmt(trabajadorEncontrado.valor_turno || 0)} | Hora Extra ${fmt(trabajadorEncontrado.valor_hora_adicional || 0)}\n` +
+            (enNomina ? `• 📊 **Estado en Nómina**: **${turnos} turnos** → **${fmt(neto)}** (${estadoIcon})\n\n` : '\n') +
+            `💬 **¿Qué dato deseas cambiarle? Puedes pedirme por ejemplo:**\n` +
+            `• *"Cámbiale la cuenta a [número]"*\n` +
+            `• *"Cámbiale la cédula a [número]"*\n` +
+            `• *"Cambia su banco a Bancolombia"* (o Nequi, Daviplata, etc.)\n` +
+            `• *"Actualiza su turno a 40000"*\n` +
+            `• *"Pásalo al parqueadero Carton C"*\n\n` +
+            `*(También puedes presionar el botón de abajo para abrir la edición directamente en su fila de la tabla).*`,
+          acciones: [
+            {
+              label: `✏️ Abrir editor de ${trabajadorEncontrado.nombre.split(' ')[0]} en tabla`,
+              tipo: 'EDITAR_EN_TABLA',
+              payload: {
+                cedula: trabajadorEncontrado.cedula,
+                nombre: trabajadorEncontrado.nombre
+              }
+            },
+            {
+              label: `📍 Ubicar a ${trabajadorEncontrado.nombre.split(' ')[0]} en la tabla`,
+              tipo: 'DESPLAZAR_TABLA',
+              payload: {
+                cedula: trabajadorEncontrado.cedula,
+                nombre: trabajadorEncontrado.nombre
+              }
+            }
+          ]
+        };
       }
     }
   }

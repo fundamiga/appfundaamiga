@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Sparkles, X, Send, Bot, User, ChevronDown, Check, Copy, Calculator, Shield, Users, HelpCircle, RefreshCw, Zap, MapPin } from 'lucide-react';
+import { Sparkles, X, Send, Bot, User, ChevronDown, Check, Copy, Calculator, Shield, Users, HelpCircle, RefreshCw, Zap, MapPin, Pencil } from 'lucide-react';
 import { processAIChatMessage, ChatMessage, ChatAction, executeUpdateTrabajador } from '@/lib/aiChatService';
 
 export default function AIChatWidget() {
@@ -85,6 +85,18 @@ export default function AIChatWidget() {
           }
         }, 250);
       }
+
+      // Si la respuesta incluye abrir edición en la tabla, auto-abrir
+      const accionEditar = responseObj.acciones?.find(a => a.tipo === 'EDITAR_EN_TABLA');
+      if (accionEditar?.payload) {
+        setTimeout(() => {
+          if (typeof window !== 'undefined') {
+            window.dispatchEvent(new CustomEvent('fundamiga:abrir-edicion-trabajador', {
+              detail: accionEditar.payload
+            }));
+          }
+        }, 400);
+      }
     } catch {
       setMessages(prev => [
         ...prev,
@@ -107,6 +119,15 @@ export default function AIChatWidget() {
     if (action.tipo === 'DESPLAZAR_TABLA' && action.payload) {
       if (typeof window !== 'undefined') {
         window.dispatchEvent(new CustomEvent('fundamiga:desplazar-a-trabajador', {
+          detail: action.payload
+        }));
+      }
+      return;
+    }
+
+    if (action.tipo === 'EDITAR_EN_TABLA' && action.payload) {
+      if (typeof window !== 'undefined') {
+        window.dispatchEvent(new CustomEvent('fundamiga:abrir-edicion-trabajador', {
           detail: action.payload
         }));
       }
@@ -331,6 +352,18 @@ export default function AIChatWidget() {
                               className="w-full py-1.5 px-3 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-xs bg-emerald-600 hover:bg-emerald-700 text-white cursor-pointer active:scale-98"
                             >
                               <MapPin size={13} /> {act.label}
+                            </button>
+                          );
+                        }
+
+                        if (act.tipo === 'EDITAR_EN_TABLA') {
+                          return (
+                            <button
+                              key={aIdx}
+                              onClick={() => handleExecuteAction(act, aIdx)}
+                              className="w-full py-1.5 px-3 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-xs bg-amber-500 hover:bg-amber-600 text-white cursor-pointer active:scale-98"
+                            >
+                              <Pencil size={13} /> {act.label}
                             </button>
                           );
                         }

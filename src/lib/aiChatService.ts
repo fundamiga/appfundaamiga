@@ -23,6 +23,10 @@ export interface ChatContext {
     nombre: string;
     cedula?: string;
   };
+  modificacionPendiente?: {
+    tipo: 'MODIFICAR_DATO' | 'MODIFICAR_TURNOS';
+    payload: any;
+  };
 }
 
 export interface ChatResponse {
@@ -530,7 +534,8 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     .replace(/\b(perdro)\b/g, 'pedro')
     .replace(/\b(quienen|quiene|quieness|kien|kienes|kienen)\b/g, 'quienes')
     .replace(/\b(perosnas|pesonas|personass|pesona|personad|perosna|persoas)\b/g, 'personas')
-    .replace(/\b(trabajadore|trabajadorse|trabajadoers)\b/g, 'trabajadores')
+    .replace(/\b(trabajadore|trabajadorse|trabajadoers|trbajadores|trbakadores|trabjadores|trabajdores|trabaajdores|trabajaadores)\b/g, 'trabajadores')
+    .replace(/\b(trbajador|trbakador|trabjador|trabajdor|trabaajdor|trabajaador)\b/g, 'trabajador')
     .replace(/\b(nominaa|nmina|monina|nomnia)\b/g, 'nomina')
     .replace(/\b(tabal|tbala|tavla)\b/g, 'tabla')
     .replace(/\b(cuadroo|cudaros?|cuadroa)\b/g, 'cuadro')
@@ -538,6 +543,56 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     .replace(/\b5\s*-\s*6\b/g, '5 - 6')
     .replace(/\b6\s*-\s*6\b/g, '6 - 6')
     .replace(/\b2\s*-\s*10\b/g, '2 - 10');
+
+  // ── 0.000 CONFIRMACIÓN DE ACCIÓN PENDIENTE (MODIFICAR O ELIMINAR) ───────────
+  const esConfirmacion = /\b(confirmo|confirmar|confirma|si|hazlo|dale|procede|aplica|aplicar|guardar|guarda|ok|listo)\b/i.test(q);
+  const esCancelacion = /\b(cancela|cancelar|no|deten|detener)\b/i.test(q);
+
+  if (esConfirmacion) {
+    if (context?.modificacionPendiente) {
+      if (context.modificacionPendiente.tipo === 'MODIFICAR_DATO') {
+        const res = await executeUpdateTrabajador(context.modificacionPendiente.payload);
+        return {
+          text: res.message,
+          nuevoContexto: {
+            ultimoTrabajador: context.ultimoTrabajador,
+            modificacionPendiente: undefined
+          }
+        };
+      } else if (context.modificacionPendiente.tipo === 'MODIFICAR_TURNOS') {
+        const res = await executeModificarTurnosLiquidacion(context.modificacionPendiente.payload);
+        return {
+          text: res.message,
+          nuevoContexto: {
+            ultimoTrabajador: context.ultimoTrabajador,
+            modificacionPendiente: undefined
+          }
+        };
+      }
+    }
+
+    if (context?.eliminandoPendiente) {
+      const res = await executeEliminarDeNomina(context.eliminandoPendiente);
+      return {
+        text: res.message,
+        nuevoContexto: {
+          ultimoTrabajador: context.ultimoTrabajador,
+          eliminandoPendiente: undefined
+        }
+      };
+    }
+  }
+
+  if (esCancelacion && (context?.modificacionPendiente || context?.eliminandoPendiente)) {
+    return {
+      text: `🛑 **Acción cancelada.** No se realizó ninguna modificación en el sistema.`,
+      nuevoContexto: {
+        ultimoTrabajador: context.ultimoTrabajador,
+        modificacionPendiente: undefined,
+        eliminandoPendiente: undefined
+      }
+    };
+  }
 
   // ── 0. SALUDOS Y PRESENTACIÓN ───────────────────────────────────────────────
   const esSaludo = /^(hola|buenos\s*dias|buenas\s*tardes|buenas\s*noches|saludos|que\s*tal|buenas|hi|hello)\b/i.test(q);
@@ -2039,7 +2094,16 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
               ],
               nuevoContexto: {
                 ultimoTrabajador: trabajadorEncontrado,
-                campoPendiente: undefined
+                campoPendiente: undefined,
+                modificacionPendiente: {
+                  tipo: 'MODIFICAR_TURNOS',
+                  payload: {
+                    historialId: enNomina.id,
+                    nombre: trabajadorEncontrado.nombre,
+                    cedula: trabajadorEncontrado.cedula,
+                    nuevosDias: valorNuevo
+                  }
+                }
               }
             };
           }
@@ -2085,7 +2149,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
               `• 🔄 **Campo a modificar**: **${campoLabel}**\n` +
               `• ⚠️ **Valor actual**: ${valorAnteriorFmt}\n` +
               `• ✨ **Nuevo valor**: ${valorNuevoFmt}\n\n` +
-              `*Presiona el botón a continuación para aplicar el cambio:*`,
+              `*Presiona el botón a continuación o escribe "confirmo" para aplicar el cambio:*`,
             acciones: [
               {
                 label: `⚡ Confirmar cambio: ${campoLabel} → ${valorNuevoBoton}`,
@@ -2111,7 +2175,19 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
             ],
             nuevoContexto: {
               ultimoTrabajador: trabajadorEncontrado,
-              campoPendiente: undefined
+              campoPendiente: undefined,
+              modificacionPendiente: {
+                tipo: 'MODIFICAR_DATO',
+                payload: {
+                  trabajadorId: trabajadorEncontrado.id,
+                  nombre: trabajadorEncontrado.nombre,
+                  campo: campoDB,
+                  campoLabel: campoLabel,
+                  valorNuevo: valorNuevo,
+                  valorAnterior: trabajadorEncontrado[campoDB],
+                  cedulaAnterior: trabajadorEncontrado.cedula
+                }
+              }
             }
           };
         }
@@ -2366,18 +2442,72 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     return { text: txt.trim() };
   }
 
-  // 2.4 ¿Quiénes van? / ¿A quiénes he metido? / ¿Quiénes están?
+  // 2.4 ¿Quiénes van? / ¿A quiénes he metido? / ¿Quiénes están? / Nombres de los trabajadores
   const esPreguntaQuienesVan =
     (tienePalabraQuienes && (tienePalabraEstar || tienePalabraLugar)) ||
+    /\b(nombres?\s*(de\s*los?)?\s*(trabajadores|empleados|personas|personal))\b/i.test(q) ||
+    /\b(lista\s*(de\s*los?)?\s*(trabajadores|empleados|personas|personal))\b/i.test(q) ||
+    /\b(dame\s*(los?)?\s*nombres)\b/i.test(q) ||
+    /\b(quienes\s*son\s*los?\s*(trabajadores|empleados|personas))\b/i.test(q) ||
+    /\b(todos\s*los?\s*(trabajadores|empleados|personal))\b/i.test(q) ||
     q.includes('quienes van') || q.includes('quienes estan') ||
     q.includes('a quienes he metido') || q.includes('quienes llevo') ||
     q.includes('a quienes meti') || q.includes('quienes ya meti') ||
     q.includes('lista de ingresados') || q.includes('personas ingresadas') ||
     q.includes('quienes tengo') || q.includes('a quien llevo') ||
+    q.includes('nombres de los trabajadores') || q.includes('nombres trabajadores') ||
+    q.includes('lista de trabajadores') || q.includes('lista trabajadores') ||
     (q.includes('quienes') && (q.includes('cuadro') || q.includes('tabla') || q.includes('nomina')));
 
   if (esPreguntaQuienesVan) {
     const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+    const { data: todosTrabajadores } = await supabase.from('trabajadores').select('*');
+
+    const esConsultaTodosNombres = q.includes('nombre') || q.includes('todos') || (q.includes('lista') && !q.includes('ingresad'));
+
+    if (esConsultaTodosNombres && todosTrabajadores && todosTrabajadores.length > 0) {
+      let listaTrab = todosTrabajadores;
+      if (cargoMencionadoEnNomina) {
+        listaTrab = todosTrabajadores.filter(t => t.cargo === cargoMencionadoEnNomina);
+      }
+
+      const cedulasEnNomina = new Set((historial || []).map(h => String(h.persona?.cedula || '').trim()));
+      const agrupadosPorCargo: Record<string, typeof listaTrab> = {};
+      for (const t of listaTrab) {
+        const c = t.cargo || 'GENERAL';
+        if (!agrupadosPorCargo[c]) agrupadosPorCargo[c] = [];
+        agrupadosPorCargo[c].push(t);
+      }
+
+      let txt = `👥 **Nombres de los Trabajadores Registrados** (${listaTrab.length} personas)` +
+        (cargoMencionadoEnNomina ? ` en **${cargoMencionadoEnNomina}**` : '') + `:\n\n`;
+
+      Object.entries(agrupadosPorCargo).forEach(([cargo, lista]) => {
+        txt += `🏢 **${cargo}** (${lista.length}):\n`;
+        lista.forEach(t => {
+          const estaEnNomina = cedulasEnNomina.has(String(t.cedula || '').trim());
+          const badge = estaEnNomina ? '✅ En nómina' : '⏳ Pendiente de liquidar';
+          txt += `   • **${t.nombre}** (C.C. \`${t.cedula || 'S/C'}\`) — ${t.forma_pago || 'Efectivo'} [${badge}]\n`;
+        });
+        txt += `\n`;
+      });
+
+      return {
+        text: txt.trim(),
+        acciones: [
+          {
+            label: `📊 Ver informe de nómina`,
+            tipo: 'CONSULTAR_DETALLE',
+            payload: 'Dame un informe de cómo va la nómina'
+          },
+          {
+            label: `⏳ Ver quiénes faltan por liquidar`,
+            tipo: 'CONSULTAR_DETALLE',
+            payload: '¿Quiénes faltan por liquidar?'
+          }
+        ]
+      };
+    }
 
     if (!historial || historial.length === 0) {
       return {
@@ -2421,7 +2551,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     return { text: txt };
   }
 
-  // 2.5 ¿Cuántos llevo? / ¿Cómo va la nómina? / Resumen general del cuadro / Informe ejecutivo
+  // 2.5 ¿Cuántos llevo? / ¿Cómo va la nómina? / Resumen general del cuadro / Informe ejecutivo / Cuánto es el total
   const esPeticionResumenOInforme =
     (tienePalabraCuantos && (tienePalabraEntidad || tienePalabraLugar || tienePalabraAccion)) ||
     (/\b(resumen|informe|reporte|estado)\b/i.test(q) && (
@@ -2432,6 +2562,11 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     )) ||
     /\b(como\s*va\s*(la|el)?\s*(nomina|cuadro|tabla))\b/i.test(q) ||
     /\b(como\s*vamos\s*(en|con)?\s*(la|el)?\s*(nomina|cuadro|tabla)?)\b/i.test(q) ||
+    /\b(cuanto\s*(?:es|suma|vale|da|asciende)?\s*(?:el)?\s*total)\b/i.test(q) ||
+    /\b(cual\s*es\s*el\s*total)\b/i.test(q) ||
+    /\b(total\s*(de\s*la)?\s*(nomina|cuadro|tabla|general))\b/i.test(q) ||
+    q === 'total' || q === 'cuanto es el total' || q === 'cual es el total' ||
+    q === 'cuanto es' || q === 'cuanto da' ||
     q.includes('cuantos llevo') || q.includes('cuantas personas van') ||
     q.includes('cuantos van') || q.includes('como voy') ||
     q.includes('cuantos hay en la nomina') || q.includes('cuantos ingresados') ||
@@ -2514,21 +2649,33 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     const ultimo = historial[0];
     const faltantes = Math.max(0, totalDisponibles - totalRegistros);
 
-    const reportText =
-      `📊 **Informe Ejecutivo y Resumen en Vivo de la Nómina**:\n\n` +
-      `• 👥 **Progreso**: **${totalRegistros} trabajadores ingresados**` + (totalDisponibles > 0 ? ` de ${totalDisponibles} registrados (**${pct}%**)` : '') + `\n` +
-      `• 📅 **Días turno liquidados**: **${totalTurnos} días**` + (totalHoras > 0 ? ` | Horas extra: **${totalHoras} hrs**` : '') + `\n` +
-      `• 💰 **Total Neto Nómina**: **${fmt(totalNeto)}**\n\n` +
-      `💵 **Estado de Pagos**:\n` +
-      `• ⏳ **Pendiente por pagar**: **${fmt(totalPendiente)}** (${pendientes.length} personas)\n` +
-      `• ✅ **Pagado efectivamente**: **${fmt(totalPagado)}** (${pagados.length} personas)\n\n` +
-      (listaParqueaderos.length > 0 ? `🏢 **Distribución por Parqueaderos (Top)**:\n${listaParqueaderos.join('\n')}\n\n` : '') +
-      (listaBancos.length > 0 ? `💳 **Distribución por Formas de Pago**:\n${listaBancos.join('\n')}\n\n` : '') +
-      (totalArl > 0 || totalPrestamos > 0
-        ? `🛡️ **Deducciones**: ${totalArl > 0 ? `ARL PILA: ${fmt(totalArl)}` : ''}` + (totalPrestamos > 0 ? ` | Préstamos: ${fmt(totalPrestamos)}` : '') + `\n\n`
-        : '') +
-      (ultimo ? `🕒 **Última liquidación agregada**: **${ultimo.persona?.nombre}** (${fmt(ultimo.resultado?.neto || 0)})\n` : '') +
-      (faltantes > 0 ? `\n⏳ *Faltan por ingresar **${faltantes} personas** a la nómina.*` : `\n🎉 *¡Todos los trabajadores registrados ya están ingresados en la nómina!*`);
+    const esPreguntaExplicitaTotal = /\b(total|cuanto\s*es\s*el\s*total|cual\s*es\s*el\s*total|cuanto\s*da|cuanto\s*es)\b/i.test(q);
+
+    let reportText = '';
+    if (esPreguntaExplicitaTotal && !q.includes('informe') && !q.includes('resumen') && !q.includes('como va')) {
+      reportText =
+        `💵 **Total Neto Nómina en Vivo**: **${fmt(totalNeto)}**\n\n` +
+        `• ⏳ **Pendiente por pagar**: **${fmt(totalPendiente)}** (${pendientes.length} personas)\n` +
+        `• ✅ **Pagado efectivamente**: **${fmt(totalPagado)}** (${pagados.length} personas)\n` +
+        `• 👥 **Personas en nómina**: **${totalRegistros} trabajadores** (${totalTurnos} turnos liquidados)\n` +
+        (faltantes > 0 ? `\n⏳ *Aún faltan ${faltantes} trabajadores por liquidar en nómina.*` : `\n🎉 *¡Todos los trabajadores registrados ya están en nómina!*`);
+    } else {
+      reportText =
+        `📊 **Informe Ejecutivo y Resumen en Vivo de la Nómina**:\n\n` +
+        `• 💰 **Total Neto Nómina**: **${fmt(totalNeto)}**\n` +
+        `• 👥 **Progreso**: **${totalRegistros} trabajadores ingresados**` + (totalDisponibles > 0 ? ` de ${totalDisponibles} registrados (**${pct}%**)` : '') + `\n` +
+        `• 📅 **Días turno liquidados**: **${totalTurnos} días**` + (totalHoras > 0 ? ` | Horas extra: **${totalHoras} hrs**` : '') + `\n\n` +
+        `💵 **Estado de Pagos**:\n` +
+        `• ⏳ **Pendiente por pagar**: **${fmt(totalPendiente)}** (${pendientes.length} personas)\n` +
+        `• ✅ **Pagado efectivamente**: **${fmt(totalPagado)}** (${pagados.length} personas)\n\n` +
+        (listaParqueaderos.length > 0 ? `🏢 **Distribución por Parqueaderos (Top)**:\n${listaParqueaderos.join('\n')}\n\n` : '') +
+        (listaBancos.length > 0 ? `💳 **Distribución por Formas de Pago**:\n${listaBancos.join('\n')}\n\n` : '') +
+        (totalArl > 0 || totalPrestamos > 0
+          ? `🛡️ **Deducciones**: ${totalArl > 0 ? `ARL PILA: ${fmt(totalArl)}` : ''}` + (totalPrestamos > 0 ? ` | Préstamos: ${fmt(totalPrestamos)}` : '') + `\n\n`
+          : '') +
+        (ultimo ? `🕒 **Última liquidación agregada**: **${ultimo.persona?.nombre}** (${fmt(ultimo.resultado?.neto || 0)})\n` : '') +
+        (faltantes > 0 ? `\n⏳ *Faltan por ingresar **${faltantes} personas** a la nómina.*` : `\n🎉 *¡Todos los trabajadores registrados ya están ingresados en la nómina!*`);
+    }
 
     const acciones: ChatAction[] = [];
 

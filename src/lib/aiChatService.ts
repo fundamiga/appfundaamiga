@@ -1079,6 +1079,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
   const esPeticionMismosDatos =
     (/\b(mismos?\s*(datos?|turnos?|dias?|valores?)|esos?\s*mismos?)\b/i.test(q)) ||
     (/\b(lo\s*mismo\s*(a|para|con)?|igual\s*(a|para|que)?|haz\s*lo\s*mismo|ponle\s*lo\s*mismo)\b/i.test(q)) ||
+    (/\bcon\s+(?:los\s+|las\s+|esos\s+|esas\s+|la\s+|el\s+)?(?:mismos?\s+|mismas?\s+)?(?:datos?|turnos?|dias?|valores?|info|informacion)\s+(?:de|que|a)\b/i.test(q)) ||
     (q.includes('mismos datos') || q.includes('mismos turnos') || q.includes('mismos dias') || q.includes('misma informacion'));
 
   if (esPeticionMismosDatos) {
@@ -1088,9 +1089,9 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     const normStr = (s: string) =>
       (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 
-    // 1. Detectar si se indicó un trabajador de referencia/origen explícito (ej: "con los mismos datos de noe", "igual que carlos")
+    // 1. Detectar si se indicó un trabajador de referencia/origen explícito (ej: "con los mismos datos de noe", "igual que carlos", "con los datos de tangarife")
     let trabajadorOrigenNombre = '';
-    const matchOrigen = q.match(/(?:con\s*(?:los\s*|esos\s*)?mismos?\s*(?:datos?|turnos?|dias?|valores?)|lo\s*mismo|igual)\s*(?:que|de|a)\s+([^,]+?)(?=\s+(?:a|en|para)?\s*(?:la\s+nomina|el\s+cuadro|la\s+tabla|el\s+sistema)|\s+(?:agrega|ingresa|mete|liquida)|$)/i);
+    const matchOrigen = q.match(/(?:con\s+(?:los\s+|las\s+|esos\s+|esas\s+|la\s+|el\s+)?(?:mismos?\s+|mismas?\s+)?(?:datos?|turnos?|dias?|valores?|info|informacion)|lo\s*mismo|igual)\s*(?:que|de|a)\s+([^,]+?)(?=\s+(?:a|en|para)?\s*(?:la\s+nomina|el\s+cuadro|la\s+tabla|el\s+sistema)|\s+(?:agrega|ingresa|mete|liquida)|$)/i);
     if (matchOrigen) {
       trabajadorOrigenNombre = matchOrigen[1].trim()
         .replace(/\b(?:a|en|para)?\s*(?:la\s+nomina|el\s+cuadro|la\s+tabla|el\s+sistema)\b.*$/i, '')
@@ -1167,7 +1168,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     let textoNombres = qDestino
       .replace(/\b(agrega|agregale|ingresa|ingresale|mete|metele|liquida|liquidale|calcula|calculale)\s*(a)?\b/gi, ' ')
       .replace(/\b(con|de|en|el|la|los|las|y|o|e|a|al|para|por)\b/gi, ' ')
-      .replace(/\b(mismos?\s*(datos?|turnos?|dias?|valores?)|esos?\s*mismos?)\b/gi, ' ')
+      .replace(/\b(?:mismos?\s+|mismas?\s+|esos?\s*mismos?\s*)?(?:datos?|turnos?|dias?|valores?|info|informacion)\b/gi, ' ')
       .replace(/\b(lo\s*mismo|igual|haz\s*lo\s*mismo|ponle\s*lo\s*mismo|tambien|nomina|cuadro|tabla)\b/gi, ' ')
       .replace(/\s+/g, ' ')
       .trim();
@@ -1192,7 +1193,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         .replace(/\b(agrega|agregale|ingresa|ingresale|mete|metele|liquida|liquidale)\s*(a)?\b/gi, '')
         .replace(/\b(?:a|en|para)?\s*(?:la\s+nomina|el\s+cuadro|la\s+tabla|el\s+sistema)\b/gi, '')
         .split(/\s+(?:y|e)\s+|,/i)
-        .map(p => p.replace(/\b(con|los|mismos|datos|turnos|dias)\b/gi, '').trim())
+        .map(p => p.replace(/\b(con|los|las|el|la|esos|esas|mismos?|mismas?|datos?|turnos?|dias?|valores?|info|informacion)\b/gi, '').trim())
         .filter(p => p.length >= 2);
 
       const agregadosIds = new Set<string>();

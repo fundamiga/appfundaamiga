@@ -144,6 +144,11 @@ export default function AIChatWidget() {
       return;
     }
 
+    if (action.tipo === 'CONSULTAR_DETALLE' && action.payload) {
+      handleSendMessage(action.payload);
+      return;
+    }
+
     if (action.tipo === 'CREAR_TRABAJADOR' && action.payload) {
       const actionKey = `crear-${actIdx}-${action.payload.nombre}`;
       if (accionesEjecutadas.includes(actionKey) || ejecutandoAccionId === actionKey) return;
@@ -579,6 +584,30 @@ export default function AIChatWidget() {
                                   <Trash2 size={14} /> {act.label}
                                 </>
                               )}
+                            </button>
+                          );
+                        }
+
+                        if (act.tipo === 'CONSULTAR_DETALLE') {
+                          return (
+                            <button
+                              key={aIdx}
+                              onClick={() => handleExecuteAction(act, aIdx)}
+                              className="w-full py-1.5 px-3 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 cursor-pointer active:scale-98"
+                            >
+                              <HelpCircle size={13} /> {act.label}
+                            </button>
+                          );
+                        }
+
+                        if (act.tipo === 'APLICAR_FILTROS') {
+                          return (
+                            <button
+                              key={aIdx}
+                              onClick={() => handleExecuteAction(act, aIdx)}
+                              className="w-full py-1.5 px-3 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-xs bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200 cursor-pointer active:scale-98"
+                            >
+                              <Zap size={13} /> {act.label}
                             </button>
                           );
                         }

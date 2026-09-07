@@ -61,6 +61,98 @@ export interface ChatMessage {
 
 const fmt = (n: number) => `$${Math.round(n).toLocaleString('es-CO')}`;
 
+// ── UTILIDADES DE SIMILITUD DE TEXTO Y DISTANCIA FUZZY (LEVENSHTEIN) ──────────
+export function levenshteinDistance(a: string, b: string): number {
+  const an = a ? a.length : 0;
+  const bn = b ? b.length : 0;
+  if (an === 0) return bn;
+  if (bn === 0) return an;
+  const matrix: number[][] = Array.from({ length: bn + 1 }, () => new Array(an + 1).fill(0));
+  for (let i = 0; i <= an; i++) matrix[0][i] = i;
+  for (let j = 0; j <= bn; j++) matrix[j][0] = j;
+  for (let j = 1; j <= bn; j++) {
+    for (let i = 1; i <= an; i++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      matrix[j][i] = Math.min(
+        matrix[j - 1][i] + 1,
+        matrix[j][i - 1] + 1,
+        matrix[j - 1][i - 1] + cost
+      );
+    }
+  }
+  return matrix[bn][an];
+}
+
+export function stringSimilarity(s1: string, s2: string): number {
+  const longer = s1.length >= s2.length ? s1 : s2;
+  const shorter = s1.length < s2.length ? s1 : s2;
+  if (longer.length === 0) return 1.0;
+  return (longer.length - levenshteinDistance(longer, shorter)) / longer.length;
+}
+
+export function fuzzyTokenMatch(text: string, candidates: string[], minSimilarity = 0.8): boolean {
+  const tokens = text.split(/\s+/).filter(t => t.length >= 3);
+  for (const token of tokens) {
+    for (const candidate of candidates) {
+      if (token === candidate) return true;
+      if (Math.abs(token.length - candidate.length) <= 2) {
+        if (stringSimilarity(token, candidate) >= minSimilarity) {
+          return true;
+        }
+      }
+    }
+  }
+  return false;
+}
+
+// ── CONECTOR OPCIONAL GOOGLE GEMINI FLASH (NIVEL GRATUITO PLUG & PLAY) ─────────
+async function callGeminiIfAvailable(message: string): Promise<string | null> {
+  const apiKey =
+    process.env.NEXT_PUBLIC_GEMINI_API_KEY ||
+    (typeof window !== 'undefined' ? localStorage.getItem('fundamiga_gemini_api_key') : null);
+
+  if (!apiKey) return null;
+
+  try {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 3500);
+
+    const systemPrompt =
+      `Eres el Asistente IA de Fundamiga, un sistema de nómina para parqueaderos y contratistas en Colombia.\n` +
+      `Responde de manera ejecutiva, clara y cordial en español colombiano.\n` +
+      `Conoces las sedes (6-6, 5-6, 2-10, Remesas, Guabinas, Carton C, Guacanda, Rozo, etc.), el descuento de ARL PILA según días cotizados, y las funciones del sistema.\n` +
+      `Mantén las respuestas concisas (máximo 3 párrafos cortos) e incluye viñetas si explicas pasos.`;
+
+    const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key=${apiKey}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        contents: [
+          { role: 'user', parts: [{ text: `${systemPrompt}\n\nConsulta del usuario: ${message}` }] }
+        ],
+        generationConfig: {
+          temperature: 0.2,
+          maxOutputTokens: 600
+        }
+      }),
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
+    if (res.ok) {
+      const data = await res.json();
+      const text = data?.candidates?.[0]?.content?.parts?.[0]?.text;
+      if (text && typeof text === 'string' && text.trim().length > 0) {
+        return text.trim();
+      }
+    }
+  } catch {
+    // Si la llamada falla o se agota el tiempo, retorno null para ejecutar el motor local
+  }
+  return null;
+}
+
 export async function executeUpdateTrabajador(payload: {
   trabajadorId: string;
   campo: string;
@@ -649,31 +741,29 @@ export async function processAIChatMessage(message: string, context?: ChatContex
   const cleanMsg = message.trim();
   if (!cleanMsg) return { text: 'Por favor escribe una consulta válida.' };
 
-  // 1. Intentar conectar con un Asistente IA Local si está disponible
-  try {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 1500);
-
-    const res = await fetch('http://localhost:3500/api/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: cleanMsg }),
-      signal: controller.signal
-    }).catch(() => null);
-
-    clearTimeout(timeoutId);
-
-    if (res && res.ok) {
-      const data = await res.json().catch(() => null);
-      if (data && data.response) {
-        return { text: data.response };
-      }
+  // Configuración interactiva de clave de Gemini desde el chat (opcional y gratuito)
+  const norm = cleanMsg.toLowerCase();
+  if (norm.includes('configurar gemini') || norm.includes('guardar api key') || norm.includes('gemini api key') || norm.includes('mi api key')) {
+    const matchKey = cleanMsg.match(/(?:gemini|key|clave)?\s*[:=]?\s*(AIza[0-9A-Za-z-_]{35})/);
+    if (matchKey && typeof window !== 'undefined') {
+      localStorage.setItem('fundamiga_gemini_api_key', matchKey[1].trim());
+      return {
+        text: `🔑 **¡Google Gemini AI activado con éxito en Fundamiga!**\n\n` +
+          `A partir de ahora, el asistente cuenta con el respaldo del modelo **Gemini 1.5 Flash** para comprender lenguaje natural abierto, manteniendo al 100% todos los cálculos y acciones del sistema.`
+      };
     }
-  } catch {
-    // Continuar con el motor inteligente integrado
   }
 
-  // 2. Motor Inteligente Directo con Base de Datos Fundamiga
+  if (norm === 'desactivar gemini' || norm === 'borrar api key' || norm === 'quitar gemini') {
+    if (typeof window !== 'undefined') {
+      localStorage.removeItem('fundamiga_gemini_api_key');
+      return {
+        text: `🧹 **Clave de Gemini removida.** El asistente continuará operando 100% con su motor semántico local integrado.`
+      };
+    }
+  }
+
+  // 1. Motor Inteligente Directo con Base de Datos Fundamiga
   return await processFundamigaQuery(cleanMsg, context);
 }
 
@@ -696,13 +786,21 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     .replace(/\b(perosnas|pesonas|personass|pesona|personad|perosna|persoas)\b/g, 'personas')
     .replace(/\b(trabajadore|trabajadorse|trabajadoers|trbajadores|trbakadores|trabjadores|trabajdores|trabaajdores|trabajaadores)\b/g, 'trabajadores')
     .replace(/\b(trbajador|trbakador|trabjador|trabajdor|trabaajdor|trabajaador)\b/g, 'trabajador')
-    .replace(/\b(nominaa|nmina|monina|nomnia)\b/g, 'nomina')
+    .replace(/\b(nominaa|nmina|monina|nomnia|nomna)\b/g, 'nomina')
     .replace(/\b(tabal|tbala|tavla)\b/g, 'tabla')
     .replace(/\b(cuadroo|cudaros?|cuadroa)\b/g, 'cuadro')
     .replace(/\b(cuant[ao]ss?|cuantoa|cuntos|cuatas)\b/g, 'cuantos')
     .replace(/\b(mimso|mimsos|mismoo|misos|miso|mismas|misma)\b/g, (m) => m.endsWith('s') ? 'mismos' : 'mismo')
     .replace(/\b(erores|eror|errrores|erorr|herrores|herror)\b/g, (m) => m.includes('es') ? 'errores' : 'error')
     .replace(/\b(algund|algu|algún)\b/g, 'algun')
+    .replace(/\b(elmina|elimen|elimin|borar|borralo|borala|suprime)\b/g, 'elimina')
+    .replace(/\b(liquidaa|liquidale|liquidalo|likida|likidar)\b/g, 'liquida')
+    .replace(/\b(deve|deven|adeudan|deuda)\b/g, 'debe')
+    .replace(/\b(bancolombiaa|bacolombia|bcolombia)\b/g, 'bancolombia')
+    .replace(/\b(daviviendaa|davivenda|davivinda)\b/g, 'davivienda')
+    .replace(/\b(nequii|neki|neky)\b/g, 'nequi')
+    .replace(/\b(daviplataa|daviplta)\b/g, 'daviplata')
+    .replace(/\b(efectivoo|efectvo|fefectivo)\b/g, 'efectivo')
     .replace(/\b5\s*-\s*6\b/g, '5 - 6')
     .replace(/\b6\s*-\s*6\b/g, '6 - 6')
     .replace(/\b2\s*-\s*10\b/g, '2 - 10');
@@ -806,17 +904,38 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
   };
 
   // ── 0. SALUDOS Y PRESENTACIÓN ───────────────────────────────────────────────
+  const esPreguntaCapacidades =
+    q.includes('que puedes hacer') ||
+    q.includes('que sabes hacer') ||
+    q.includes('que funciones tienes') ||
+    q.includes('que haces') ||
+    q.includes('como me puedes ayudar') ||
+    q.includes('menu') ||
+    q.includes('comandos') ||
+    q.includes('ayuda');
+
   const esSaludo = /^(hola|buenos\s*dias|buenas\s*tardes|buenas\s*noches|saludos|que\s*tal|buenas|hi|hello)\b/i.test(q);
-  if (esSaludo || q === 'hola' || q === 'ayuda' || q === 'que puedes hacer') {
+
+  if (esSaludo || esPreguntaCapacidades || q === 'hola' || q === 'ayuda') {
     return {
-      text: `👋 **¡Hola! Soy tu Asistente Fundamiga.**\n\n` +
-        `Puedo ayudarte a consultar información operativa en tiempo real:\n\n` +
-        `• 👤 **Personal**: Busca trabajadores por nombre, cédula o parqueadero para ver sus datos bancarios y valor de turno.\n` +
-        `• 💰 **Nómina**: Consulta el resumen de liquidaciones, totales y estado de pagos.\n` +
-        `• 🛡️ **Seguridad Social / ARL**: Información sobre días cotizados y descuentos PILA.\n` +
-        `• 🚚 **Remesas**: Movimientos y personal asignado.\n` +
-        `• 🧮 **Cálculos**: Pregúntame cómo se calculan turnos, horas extra o préstamos.\n\n` +
-        `*Prueba escribiendo un nombre (ej: "carlos"), "resumen nomina" o selecciona un botón rápido arriba.*`
+      text: `👋 **¡Hola! Soy tu Asistente Inteligente Fundamiga.**\n\n` +
+        `Estoy programado para ayudarte a controlar y auditar la nómina con órdenes directas:\n\n` +
+        `• ⚡ **Liquidación Directa**: *"Ingresa a Paola Perez con 16 turnos y 4000 de aporte"* o *"Liquida a Carlos 15 turnos"*.\n` +
+        `• 📋 **Replicar Liquidaciones**: *"Agrega a Diana con los mismos datos de Noé"* o *"Mete a Paola con los datos de Tangarife"*.\n` +
+        `• 🧭 **Flujo Guiado Paso a Paso**: Escribe solo *"Agrega a nómina a Carlos"* y te preguntaré turnos, horas y aportes paso a paso.\n` +
+        `• 🛡️ **Auditoría en Vivo**: *"¿Hay algún error en la nómina?"* o *"¿Quiénes están repetidos?"*.\n` +
+        `• 🎛️ **Filtros en Pantalla**: *"Filtra por Guabinas"*, *"Muestra solo Davivienda"* o *"Quitar filtros"*.\n` +
+        `• 🪄 **Pagos Masivos**: *"Marca como pagados a todos los de Bancolombia"*.\n` +
+        `• 🗑️ **Eliminación Segura**: *"Elimina a Donella de la tabla"*.\n` +
+        `• 📊 **Informes y Finanzas**: *"¿Cómo va la nómina?"* o *"¿Cuánto suma la nómina de Rozo?"*.\n\n` +
+        `*Elige un acceso rápido a continuación o escribe tu orden:*`,
+      acciones: [
+        { label: '📊 Ver informe de nómina', tipo: 'CONSULTAR_DETALLE', payload: 'Dame un informe de cómo va la nómina' },
+        { label: '🛡️ Auditar nómina en vivo', tipo: 'CONSULTAR_DETALLE', payload: 'Auditar nómina' },
+        { label: '⏳ Quiénes faltan por liquidar', tipo: 'CONSULTAR_DETALLE', payload: 'Quienes faltan por liquidar' },
+        { label: '👥 Trabajadores repetidos', tipo: 'CONSULTAR_DETALLE', payload: 'Quienes estan repetidos' },
+        { label: '📋 Ver todos los trabajadores', tipo: 'CONSULTAR_DETALLE', payload: 'Dame los nombres de los trabajadores' }
+      ]
     };
   }
 
@@ -3005,7 +3124,46 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     }
   }
 
-  // ── 1. CÓMO SE CALCULA / FÓRMULAS ──────────────────────────────────────────
+  // ── 1. CÓMO SE CALCULA / FÓRMULAS / GUÍA OPERATIVA Y FAQ ───────────────────
+  // 1.1 Exportación a Excel / PDF
+  if (
+    q.includes('descargar excel') || q.includes('exportar excel') || q.includes('bajar excel') ||
+    q.includes('descargar pdf') || q.includes('exportar pdf') || q.includes('generar pdf') ||
+    q.includes('como descargo') || q.includes('como exporto') || q.includes('descargar reporte') ||
+    q.includes('exportar reporte')
+  ) {
+    return {
+      text: `📥 **Cómo Exportar Reportes y Planilla en Fundamiga**:\n\n` +
+        `1. 📊 **Descargar Excel**: En la barra superior derecha del cuadro de nómina, haz clic en el botón verde **"Descargar Excel"**. Se descargará la planilla completa con fórmulas y formato contable listo.\n` +
+        `2. 📄 **Generar PDF**: Al lado del botón de Excel, pulsa el botón rojo **"Generar PDF"** para obtener un comprobante imprimible con membrete oficial de Fundamiga.\n\n` +
+        `💡 *Consejo: Puedes pedirme filtrar la vista antes de exportar (por ejemplo: "Filtra por Davivienda" o "Muestra solo los pagados") y el archivo generado reflejará exactamente lo que necesitas.*`,
+      acciones: [
+        { label: '🔍 Ver solo los pagados', tipo: 'CONSULTAR_DETALLE', payload: 'Filtra solo los pagados' },
+        { label: '🔍 Ver solo los pendientes', tipo: 'CONSULTAR_DETALLE', payload: 'Filtra solo los pendientes' },
+        { label: '🧹 Quitar filtros', tipo: 'CONSULTAR_DETALLE', payload: 'Quitar filtros' }
+      ]
+    };
+  }
+
+  // 1.2 Explicación del Descuento ARL PILA
+  if (
+    q.includes('como se calcula el arl') || q.includes('formula arl') || q.includes('cuanto descuenta arl') ||
+    q.includes('que es arl') || q.includes('por que arl') || q.includes('descuento pila')
+  ) {
+    return {
+      text: `🛡️ **Cálculo de ARL PILA en Fundamiga**:\n\n` +
+        `• El valor de ARL se calcula según los **días de turno cotizados** en la quincena (Riesgo I / Salario Mínimo Legal Vigente en Colombia).\n` +
+        `• **Ejemplo para 16 días**: El aporte proporcional es de **$40.700**.\n` +
+        `• **Manejo Contable**: Para que el trabajador no asuma este costo de su bolsillo, el valor se **suma en el Total Bruto** y se **resta en Descuentos**, garantizando que el trabajador reciba el 100% neto de sus turnos laborados y la empresa cumpla con la planilla PILA.\n` +
+        `• **Exención de ARL**: Si un contratista o aprendiz no cotiza ARL, puedes pedirme: *"Liquídalo sin ARL"*.\n\n` +
+        `💡 *Puedes auditar la nómina en cualquier momento para comprobar que todos tengan su aporte en orden.*`,
+      acciones: [
+        { label: '🛡️ Auditar nómina en vivo', tipo: 'CONSULTAR_DETALLE', payload: 'Auditar nómina' }
+      ]
+    };
+  }
+
+  // 1.3 Fórmulas de liquidación general
   if (q.includes('como se calcula') || q.includes('formula') || q.includes('calcular turno') || q.includes('horas extra') || q.includes('horas adicionales')) {
     return {
       text: `🧮 **Fórmulas del Sistema de Liquidación Fundamiga**:\n\n` +
@@ -3818,7 +3976,46 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     }
   }
 
-  // ── 7. RESPUESTA POR DEFECTO ───────────────────────────────────────────────
+  // ── 7. RESPUESTA POR DEFECTO CON GUARDRAIL ANTI-FALSOS POSITIVOS Y GEMINI ─
+  // 7.1 Si está configurado Google Gemini, consultar su modelo generativo
+  const geminiRes = await callGeminiIfAvailable(query);
+  if (geminiRes) {
+    return {
+      text: geminiRes,
+      acciones: [
+        { label: '📊 Ver informe de nómina', tipo: 'CONSULTAR_DETALLE', payload: 'Dame un informe de cómo va la nómina' },
+        { label: '🛡️ Auditar nómina en vivo', tipo: 'CONSULTAR_DETALLE', payload: 'Auditar nómina' },
+        { label: '⏳ Quiénes faltan por liquidar', tipo: 'CONSULTAR_DETALLE', payload: 'Quienes faltan por liquidar' }
+      ]
+    };
+  }
+
+  // 7.2 Si la consulta fue una duda, pregunta o comando no reconocido, dar guía en lugar de buscar un trabajador
+  const esPreguntaOGeneral =
+    /^(como|que|cual|cuales|donde|cuando|por que|porque|para que|puedo|puedes|ayuda|explica|explicame|info|guia|dime|cuanto|cuantos|hola|buenos|buenas)\b/i.test(q) ||
+    q.includes('?') ||
+    q.includes('ayuda');
+
+  if (esPreguntaOGeneral) {
+    return {
+      text: `🤖 **Asistente Inteligente Fundamiga**\n\n` +
+        `No encontré un comando exacto ni un trabajador con el término: *"${query}"*.\n\n` +
+        `💡 **¿En qué te puedo colaborar hoy?**\n` +
+        `• ⚡ **Liquidar o ingresar personal**: *"Ingresa a Paola Perez con 16 turnos"* o *"Agrega a Carlos con los datos de Tangarife"*.\n` +
+        `• 🛡️ **Auditoría de consistencia**: *"¿Hay algún error en la nómina?"* o *"¿Quiénes están repetidos?"*.\n` +
+        `• 📊 **Informes y finanzas**: *"¿Cómo va la nómina?"* o *"¿Cuánto se debe por Davivienda?"*.\n` +
+        `• 🎛️ **Control de tabla**: *"Filtra por Guabinas"* o *"Marca como pagados los de Bancolombia"*.\n` +
+        `• 🗑️ **Eliminar de nómina**: *"Elimina a [Nombre] de la tabla"*.\n\n` +
+        `*Selecciona una opción a continuación o escribe tu solicitud:*`,
+      acciones: [
+        { label: '📊 Ver informe de nómina', tipo: 'CONSULTAR_DETALLE', payload: 'Dame un informe de cómo va la nómina' },
+        { label: '🛡️ Auditar nómina en vivo', tipo: 'CONSULTAR_DETALLE', payload: 'Auditar nómina' },
+        { label: '⏳ Quiénes faltan por liquidar', tipo: 'CONSULTAR_DETALLE', payload: 'Quienes faltan por liquidar' },
+        { label: '📋 Ver todos los trabajadores', tipo: 'CONSULTAR_DETALLE', payload: 'Dame los nombres de los trabajadores' }
+      ]
+    };
+  }
+
   return {
     text: `🔎 **No se encuentra registrado ningún trabajador con el término "${query}".**\n\n` +
       `• ⚠️ No aparece registrado en la base de datos de trabajadores ni en el cuadro de nómina actual.\n\n` +

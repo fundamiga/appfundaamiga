@@ -17,6 +17,11 @@ export interface ChatContext {
   };
   liquidandoPendiente?: {
     trabajador: any;
+    paso?: 'TURNOS' | 'HORAS' | 'DESCUENTO';
+    diasTurno?: number;
+    horasAdicionales?: number;
+    tieneDescuentoPrestamo?: boolean;
+    valorDescuentoPrestamo?: number;
   };
   eliminandoPendiente?: {
     historialId: string;
@@ -1514,7 +1519,220 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         ) || context.ultimoTrabajador;
       }
 
-      // CASO 1: Trabajador identificado Y se especificaron los días de turno
+      // =========================================================================
+      // FLUJO CONVERSACIONAL GUIADO PASO POR PASO
+      // =========================================================================
+
+      // Si venimos de un paso guiado previo:
+      if (context?.liquidandoPendiente && trabajadorEncontrado) {
+        // PASO 3 -> RESPUESTA SOBRE DESCUENTO/PRESTAMO -> CALCULAR Y MOSTRAR CONFIRMACIÓN
+        if (context.liquidandoPendiente.paso === 'DESCUENTO') {
+          const diasGuardados = context.liquidandoPendiente.diasTurno || 16;
+          const horasGuardadas = context.liquidandoPendiente.horasAdicionales || 0;
+
+          let tieneDesc = false;
+          let valDesc = 0;
+
+          if (q.includes('sin') || q.includes('no') || q.includes('cero') || q.includes('ningun')) {
+            tieneDesc = false;
+            valDesc = 0;
+          } else if (matchPrestamo) {
+            tieneDesc = true;
+            valDesc = parseInt(matchPrestamo[1].replace(/[.,]/g, ''), 10);
+          } else if (/4000|4\.000/.test(q)) {
+            tieneDesc = true;
+            valDesc = 4000;
+          } else if (/^\s*\d+\s*$/.test(q)) {
+            tieneDesc = true;
+            valDesc = parseInt(q, 10);
+          } else if (q.includes('con aporte') || q.includes('con prestamo') || q.includes('con descuento') || q.includes('si') || q.includes('aplica')) {
+            tieneDesc = true;
+            valDesc = 4000;
+          }
+
+          diasTurno = diasGuardados;
+          horasAdicionales = horasGuardadas;
+          tieneDescuentoPrestamo = tieneDesc;
+          valorDescuentoPrestamo = valDesc;
+          // Caerá a la liquidación final (CASO 1)
+        }
+        // PASO 2 -> RESPUESTA SOBRE HORAS EXTRA -> MOSTRAR PASO 3 (DESCUENTO/PRESTAMO)
+        else if (context.liquidandoPendiente.paso === 'HORAS') {
+          const diasGuardados = context.liquidandoPendiente.diasTurno || 16;
+          let horas = 0;
+          if (q.includes('sin') || q.includes('no') || q.includes('ningun') || q.includes('cero')) {
+            horas = 0;
+          } else if (matchHoras) {
+            horas = parseInt(matchHoras[1], 10);
+          } else if (/^\s*\d+\s*$/.test(q)) {
+            horas = parseInt(q, 10);
+          }
+
+          const valorTurno = trabajadorEncontrado.valor_turno || 0;
+          const valorHora = trabajadorEncontrado.valor_hora_adicional || Math.round(valorTurno / 8);
+
+          return {
+            text: `👤 **${trabajadorEncontrado.nombre}** — **${diasGuardados} turnos** (${fmt(diasGuardados * valorTurno)}) | ${horas > 0 ? `**${horas} hrs extra** (+${fmt(horas * valorHora)})` : 'Sin horas extra'}\n\n` +
+              `📍 **Paso 3 de 3: Deducción de préstamos o aportes**\n` +
+              `¿Aplica descuento de aportes o préstamo a la liquidación?\n` +
+              `*(En Fundamiga la deducción usual de aportes es de **$4.000** o **$0** si no tiene)*\n\n` +
+              `💬 *Escribe por ejemplo:* \`con aporte de 4000\` o \`sin descuento\` *(o pulsa una opción)*:`,
+            acciones: [
+              {
+                label: `💳 Con aporte ($4.000)`,
+                tipo: 'CONSULTAR_DETALLE',
+                payload: `con aporte de 4000`
+              },
+              {
+                label: `💳 Sin descuento ($0)`,
+                tipo: 'CONSULTAR_DETALLE',
+                payload: `sin descuento`
+              },
+              {
+                label: `💳 Descuento de $10.000`,
+                tipo: 'CONSULTAR_DETALLE',
+                payload: `descuento de 10000`
+              }
+            ],
+            nuevoContexto: {
+              ultimoTrabajador: trabajadorEncontrado,
+              liquidandoPendiente: {
+                trabajador: trabajadorEncontrado,
+                paso: 'DESCUENTO',
+                diasTurno: diasGuardados,
+                horasAdicionales: horas
+              }
+            }
+          };
+        }
+        // PASO 1 -> RESPUESTA SOBRE DÍAS DE TURNO -> MOSTRAR PASO 2 (HORAS EXTRA)
+        else if (context.liquidandoPendiente.paso === 'TURNOS' && diasTurno > 0) {
+          const fueEspecificoCompleto = (matchHoras !== null || q.includes('sin horas') || q.includes('sin extras')) && (matchPrestamo !== null || q.includes('sin prestamo') || q.includes('sin aporte') || q.includes('con aporte') || q.includes('con prestamo'));
+
+          if (!fueEspecificoCompleto) {
+            const valorTurno = trabajadorEncontrado.valor_turno || 0;
+            const subtotalTurnos = diasTurno * valorTurno;
+
+            return {
+              text: `👤 **${trabajadorEncontrado.nombre}** — ✅ **${diasTurno} días anotados** (${fmt(subtotalTurnos)})\n\n` +
+                `📍 **Paso 2 de 3: Horas extra o adicionales**\n` +
+                `¿Tuvo horas adicionales o extras en esta quincena?\n\n` +
+                `💬 *Escribe por ejemplo:* \`2 horas extra\` o \`sin extras\` *(o pulsa un botón abajo)*:`,
+              acciones: [
+                {
+                  label: `⏱️ Sin horas extra (0 hrs)`,
+                  tipo: 'CONSULTAR_DETALLE',
+                  payload: `sin horas extra`
+                },
+                {
+                  label: `⏱️ 2 horas extra`,
+                  tipo: 'CONSULTAR_DETALLE',
+                  payload: `2 horas extra`
+                },
+                {
+                  label: `⏱️ 4 horas extra`,
+                  tipo: 'CONSULTAR_DETALLE',
+                  payload: `4 horas extra`
+                },
+                {
+                  label: `⚡ Finalizar ahora (${diasTurno} días)`,
+                  tipo: 'LIQUIDAR_TRABAJADOR',
+                  payload: {
+                    persona: {
+                      nombre: trabajadorEncontrado.nombre,
+                      cedula: trabajadorEncontrado.cedula,
+                      cargo: trabajadorEncontrado.cargo || 'General',
+                      valorTurno: valorTurno,
+                      valorHoraAdicional: trabajadorEncontrado.valor_hora_adicional || Math.round(valorTurno / 8),
+                      formaPago: trabajadorEncontrado.forma_pago || 'Bancaria',
+                      numeroCuenta: trabajadorEncontrado.numero_cuenta || ''
+                    },
+                    diasTurno,
+                    horasAdicionales: 0,
+                    tieneDescuentoPrestamo: false,
+                    valorDescuentoPrestamo: 0
+                  }
+                }
+              ],
+              nuevoContexto: {
+                ultimoTrabajador: trabajadorEncontrado,
+                liquidandoPendiente: {
+                  trabajador: trabajadorEncontrado,
+                  paso: 'HORAS',
+                  diasTurno
+                }
+              }
+            };
+          }
+        }
+      }
+
+      // CASO 2: Trabajador identificado pero NO se han especificado los días ni deducciones -> INICIAR PASO 1
+      if (trabajadorEncontrado && diasTurno === 0) {
+        const yaExiste = (historial || []).some(h => String(h.persona?.cedula || '').trim() === String(trabajadorEncontrado.cedula).trim());
+        const avisoDuplicado = yaExiste
+          ? `⚠️ *Nota: ${trabajadorEncontrado.nombre} ya tiene un registro en este cuadro de nómina.*\n\n`
+          : '';
+
+        const valorTurno = trabajadorEncontrado.valor_turno || 0;
+        const valorHora = trabajadorEncontrado.valor_hora_adicional || Math.round(valorTurno / 8);
+
+        return {
+          text: `${avisoDuplicado}👤 **Ingreso a Nómina: ${trabajadorEncontrado.nombre}**\n` +
+            `• 🏢 **Parqueadero**: ${trabajadorEncontrado.cargo || 'General'}\n` +
+            `• 💰 **Tarifa Turno**: ${fmt(valorTurno)} | Hora Extra: ${fmt(valorHora)}\n` +
+            `• 🏦 **Pago**: ${trabajadorEncontrado.forma_pago || 'No definida'} (${trabajadorEncontrado.numero_cuenta ? `\`${trabajadorEncontrado.numero_cuenta}\`` : '*Sin cuenta*'})\n\n` +
+            `📍 **Paso 1 de 3: Días o turnos laborados**\n` +
+            `¿Cuántos turnos o días trabajó **${trabajadorEncontrado.nombre.split(' ')[0]}** en esta quincena?\n` +
+            `*(La quincena estándar habitual es de 15 o 16 turnos)*\n\n` +
+            `💬 *Escribe por ejemplo:* \`16 turnos\` o \`15 días\` *(o pulsa una opción rápida)*:`,
+          acciones: [
+            {
+              label: `📅 16 turnos (Estándar)`,
+              tipo: 'CONSULTAR_DETALLE',
+              payload: `16 turnos`
+            },
+            {
+              label: `📅 15 turnos`,
+              tipo: 'CONSULTAR_DETALLE',
+              payload: `15 turnos`
+            },
+            {
+              label: `📅 12 turnos`,
+              tipo: 'CONSULTAR_DETALLE',
+              payload: `12 turnos`
+            },
+            {
+              label: `⚡ Registrar directa con 16 días ($${fmt(16 * valorTurno - 4000)})`,
+              tipo: 'LIQUIDAR_TRABAJADOR',
+              payload: {
+                persona: {
+                  nombre: trabajadorEncontrado.nombre,
+                  cedula: trabajadorEncontrado.cedula,
+                  cargo: trabajadorEncontrado.cargo || 'General',
+                  valorTurno: valorTurno,
+                  valorHoraAdicional: valorHora,
+                  formaPago: trabajadorEncontrado.forma_pago || 'Bancaria',
+                  numeroCuenta: trabajadorEncontrado.numero_cuenta || ''
+                },
+                diasTurno: 16,
+                horasAdicionales: 0,
+                tieneDescuentoPrestamo: true,
+                valorDescuentoPrestamo: 4000
+              }
+            }
+          ],
+          nuevoContexto: {
+            ultimoTrabajador: trabajadorEncontrado,
+            liquidandoPendiente: {
+              trabajador: trabajadorEncontrado,
+              paso: 'TURNOS'
+            }
+          }
+        };
+      }
+
+      // CASO 1: Trabajador identificado Y se especificaron los días de turno (o finalización del flujo guiado)
       if (trabajadorEncontrado && diasTurno > 0) {
         const yaExiste = (historial || []).some(h => String(h.persona?.cedula || '').trim() === String(trabajadorEncontrado.cedula).trim());
 
@@ -1603,93 +1821,6 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
               tieneDescuentoPrestamo,
               valorDescuentoPrestamo,
               nombreReferencia: trabajadorEncontrado.nombre
-            }
-          }
-        };
-      }
-
-      // CASO 2: Trabajador identificado pero NO se han especificado los días ni deducciones
-      if (trabajadorEncontrado && diasTurno === 0) {
-        const yaExiste = (historial || []).some(h => String(h.persona?.cedula || '').trim() === String(trabajadorEncontrado.cedula).trim());
-        const avisoDuplicado = yaExiste
-          ? `⚠️ *Nota: ${trabajadorEncontrado.nombre} ya tiene un registro en este cuadro de nómina.*\n\n`
-          : '';
-
-        return {
-          text: `${avisoDuplicado}📋 **Para ingresar a ${trabajadorEncontrado.nombre} (C.C. \`${trabajadorEncontrado.cedula}\`) a la nómina, indícame los datos de su liquidación**:\n\n` +
-            `• 📅 **¿Cuántos días de turno laboró?** (Ej: *15* o *16 días*)\n` +
-            `• ⏱️ **¿Tuvo horas extra o turnos adicionales?** (Opcional, ej: *2 horas extra*)\n` +
-            `• 🛡️ **ARL**: Se calculará automáticamente según sus días cotizados.\n` +
-            `• 💳 **Descuento de préstamos/aportes**: ¿Aplica descuento? (Usualmente *$4.000* o *$0* si no tiene).\n` +
-            `• 🎁 **Bono**: (Opcional si tiene un incentivo adicional).\n\n` +
-            `💬 *Puedes responder por ejemplo:*\n` +
-            `• *"16 turnos"*\n` +
-            `• *"15 turnos y 4000 de aporte"*\n` +
-            `• *"16 días con 2 horas extra y sin préstamo"*\n\n` +
-            `*(O selecciona una opción rápida abajo)*`,
-          acciones: [
-            {
-              label: `📅 16 turnos`,
-              tipo: 'LIQUIDAR_TRABAJADOR',
-              payload: {
-                persona: {
-                  nombre: trabajadorEncontrado.nombre,
-                  cedula: trabajadorEncontrado.cedula,
-                  cargo: trabajadorEncontrado.cargo || 'General',
-                  valorTurno: trabajadorEncontrado.valor_turno || 0,
-                  valorHoraAdicional: trabajadorEncontrado.valor_hora_adicional || Math.round((trabajadorEncontrado.valor_turno || 0) / 8),
-                  formaPago: trabajadorEncontrado.forma_pago || 'Bancaria',
-                  numeroCuenta: trabajadorEncontrado.numero_cuenta || ''
-                },
-                diasTurno: 16,
-                horasAdicionales: 0,
-                tieneDescuentoPrestamo: false,
-                valorDescuentoPrestamo: 0
-              }
-            },
-            {
-              label: `📅 15 turnos`,
-              tipo: 'LIQUIDAR_TRABAJADOR',
-              payload: {
-                persona: {
-                  nombre: trabajadorEncontrado.nombre,
-                  cedula: trabajadorEncontrado.cedula,
-                  cargo: trabajadorEncontrado.cargo || 'General',
-                  valorTurno: trabajadorEncontrado.valor_turno || 0,
-                  valorHoraAdicional: trabajadorEncontrado.valor_hora_adicional || Math.round((trabajadorEncontrado.valor_turno || 0) / 8),
-                  formaPago: trabajadorEncontrado.forma_pago || 'Bancaria',
-                  numeroCuenta: trabajadorEncontrado.numero_cuenta || ''
-                },
-                diasTurno: 15,
-                horasAdicionales: 0,
-                tieneDescuentoPrestamo: false,
-                valorDescuentoPrestamo: 0
-              }
-            },
-            {
-              label: `📅 16 turnos + $4.000 aporte`,
-              tipo: 'LIQUIDAR_TRABAJADOR',
-              payload: {
-                persona: {
-                  nombre: trabajadorEncontrado.nombre,
-                  cedula: trabajadorEncontrado.cedula,
-                  cargo: trabajadorEncontrado.cargo || 'General',
-                  valorTurno: trabajadorEncontrado.valor_turno || 0,
-                  valorHoraAdicional: trabajadorEncontrado.valor_hora_adicional || Math.round((trabajadorEncontrado.valor_turno || 0) / 8),
-                  formaPago: trabajadorEncontrado.forma_pago || 'Bancaria',
-                  numeroCuenta: trabajadorEncontrado.numero_cuenta || ''
-                },
-                diasTurno: 16,
-                horasAdicionales: 0,
-                tieneDescuentoPrestamo: true,
-                valorDescuentoPrestamo: 4000
-              }
-            }
-          ],
-          nuevoContexto: {
-            ultimoTrabajador: trabajadorEncontrado,
-            liquidandoPendiente: {
-              trabajador: trabajadorEncontrado
             }
           }
         };

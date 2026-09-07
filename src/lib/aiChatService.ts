@@ -1090,9 +1090,11 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
 
     // 1. Detectar si se indicó un trabajador de referencia/origen explícito (ej: "con los mismos datos de noe", "igual que carlos")
     let trabajadorOrigenNombre = '';
-    const matchOrigen = q.match(/(?:con\s*(?:los\s*|esos\s*)?mismos?\s*(?:datos?|turnos?|dias?|valores?)|lo\s*mismo|igual)\s*(?:que|de|a)\s+([a-z0-9\s]+)$/i);
+    const matchOrigen = q.match(/(?:con\s*(?:los\s*|esos\s*)?mismos?\s*(?:datos?|turnos?|dias?|valores?)|lo\s*mismo|igual)\s*(?:que|de|a)\s+([^,]+?)(?=\s+(?:a|en|para)?\s*(?:la\s+nomina|el\s+cuadro|la\s+tabla|el\s+sistema)|\s+(?:agrega|ingresa|mete|liquida)|$)/i);
     if (matchOrigen) {
-      trabajadorOrigenNombre = matchOrigen[1].trim();
+      trabajadorOrigenNombre = matchOrigen[1].trim()
+        .replace(/\b(?:a|en|para)?\s*(?:la\s+nomina|el\s+cuadro|la\s+tabla|el\s+sistema)\b.*$/i, '')
+        .trim();
     }
 
     let diasTurno = context?.ultimaLiquidacion?.diasTurno;
@@ -1106,26 +1108,35 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
 
     // Si se especificó un trabajador origen, buscar sus datos en el historial de nómina
     if (trabajadorOrigenNombre) {
-      const origenHistorial = (historial || []).find(h =>
-        normStr(h.persona?.nombre || '').includes(normStr(trabajadorOrigenNombre)) ||
-        String(h.persona?.cedula || '').includes(trabajadorOrigenNombre)
-      );
+      const tokensOrigen = normStr(trabajadorOrigenNombre).split(/\s+/).filter(tk => tk.length >= 2);
+      const origenHistorial = (historial || []).find(h => {
+        const nom = normStr(h.persona?.nombre || '');
+        const ced = String(h.persona?.cedula || '').trim();
+        if (tokensOrigen.length > 0 && tokensOrigen.every(tk => nom.includes(tk))) return true;
+        if (tokensOrigen.some(tk => ced.includes(tk))) return true;
+        if (tokensOrigen.length > 0 && tokensOrigen.some(tk => nom.includes(tk))) return true;
+        return false;
+      });
 
       if (origenHistorial) {
         diasTurno = Number(origenHistorial.form?.diasTurno) || 16;
         horasAdicionales = Number(origenHistorial.form?.horasAdicionales) || 0;
-        tieneDescuentoPrestamo = Boolean((origenHistorial.resultado?.descuentoPrestamo || 0) > 0);
-        valorDescuentoPrestamo = Number(origenHistorial.resultado?.descuentoPrestamo) || 0;
+        tieneDescuentoPrestamo = Boolean((origenHistorial.resultado?.descuentoPrestamo || origenHistorial.form?.valorDescuentoPrestamo || 0) > 0);
+        valorDescuentoPrestamo = Number(origenHistorial.resultado?.descuentoPrestamo || origenHistorial.form?.valorDescuentoPrestamo) || 0;
         tieneBono = Boolean((origenHistorial.form?.valorBono || origenHistorial.form?.bono || 0) > 0);
         valorBono = Number(origenHistorial.form?.valorBono || origenHistorial.form?.bono) || 0;
         nombreReferencia = origenHistorial.persona?.nombre;
         sinARL = origenHistorial.form?.tieneDescuentoSeguridad === false ||
                  (origenHistorial.resultado?.descuentoSeguridad !== undefined && Number(origenHistorial.resultado?.descuentoSeguridad) === 0);
       } else {
-        const origenTrab = (todosTrabajadores || []).find(t =>
-          normStr(t.nombre).includes(normStr(trabajadorOrigenNombre)) ||
-          String(t.cedula).includes(trabajadorOrigenNombre)
-        );
+        const origenTrab = (todosTrabajadores || []).find(t => {
+          const nom = normStr(t.nombre || '');
+          const ced = String(t.cedula || '').trim();
+          if (tokensOrigen.length > 0 && tokensOrigen.every(tk => nom.includes(tk))) return true;
+          if (tokensOrigen.some(tk => ced.includes(tk))) return true;
+          if (tokensOrigen.length > 0 && tokensOrigen.some(tk => nom.includes(tk))) return true;
+          return false;
+        });
         if (origenTrab) {
           nombreReferencia = origenTrab.nombre;
         }
@@ -1134,8 +1145,8 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
       const ultima = historial[0];
       diasTurno = Number(ultima.form?.diasTurno) || 16;
       horasAdicionales = Number(ultima.form?.horasAdicionales) || 0;
-      tieneDescuentoPrestamo = Boolean((ultima.resultado?.descuentoPrestamo || 0) > 0);
-      valorDescuentoPrestamo = Number(ultima.resultado?.descuentoPrestamo) || 0;
+      tieneDescuentoPrestamo = Boolean((ultima.resultado?.descuentoPrestamo || ultima.form?.valorDescuentoPrestamo || 0) > 0);
+      valorDescuentoPrestamo = Number(ultima.resultado?.descuentoPrestamo || ultima.form?.valorDescuentoPrestamo) || 0;
       tieneBono = Boolean((ultima.form?.valorBono || ultima.form?.bono || 0) > 0);
       valorBono = Number(ultima.form?.valorBono || ultima.form?.bono) || 0;
       nombreReferencia = ultima.persona?.nombre;
@@ -1150,7 +1161,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     // 2. Extraer a los trabajadores destino (excluyendo la parte de origen)
     let qDestino = q;
     if (matchOrigen && matchOrigen.index !== undefined) {
-      qDestino = q.substring(0, matchOrigen.index).trim();
+      qDestino = (q.substring(0, matchOrigen.index) + ' ' + q.substring(matchOrigen.index + matchOrigen[0].length)).trim();
     }
 
     let textoNombres = qDestino
@@ -1179,6 +1190,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
       // Separar por delimitadores de personas: ' y ', ' e ', ','
       const personasPedidas = qDestino
         .replace(/\b(agrega|agregale|ingresa|ingresale|mete|metele|liquida|liquidale)\s*(a)?\b/gi, '')
+        .replace(/\b(?:a|en|para)?\s*(?:la\s+nomina|el\s+cuadro|la\s+tabla|el\s+sistema)\b/gi, '')
         .split(/\s+(?:y|e)\s+|,/i)
         .map(p => p.replace(/\b(con|los|mismos|datos|turnos|dias)\b/gi, '').trim())
         .filter(p => p.length >= 2);

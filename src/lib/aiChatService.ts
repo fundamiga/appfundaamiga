@@ -1072,7 +1072,13 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     const normStr = (s: string) =>
       (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
 
-    // 1. Obtener parámetros de la última liquidación
+    // 1. Detectar si se indicó un trabajador de referencia/origen explícito (ej: "con los mismos datos de noe", "igual que carlos")
+    let trabajadorOrigenNombre = '';
+    const matchOrigen = q.match(/(?:con\s*(?:los\s*|esos\s*)?mismos?\s*(?:datos?|turnos?|dias?|valores?)|lo\s*mismo|igual)\s*(?:que|de|a)\s+([a-z0-9\s]+)$/i);
+    if (matchOrigen) {
+      trabajadorOrigenNombre = matchOrigen[1].trim();
+    }
+
     let diasTurno = context?.ultimaLiquidacion?.diasTurno;
     let horasAdicionales = context?.ultimaLiquidacion?.horasAdicionales || 0;
     let tieneDescuentoPrestamo = context?.ultimaLiquidacion?.tieneDescuentoPrestamo || false;
@@ -1081,8 +1087,31 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     let valorBono = context?.ultimaLiquidacion?.valorBono || 0;
     let nombreReferencia = context?.ultimaLiquidacion?.nombreReferencia;
 
-    // Si no está en context, buscar la liquidación más reciente en Supabase
-    if (diasTurno === undefined && historial && historial.length > 0) {
+    // Si se especificó un trabajador origen, buscar sus datos en el historial de nómina
+    if (trabajadorOrigenNombre) {
+      const origenHistorial = (historial || []).find(h =>
+        normStr(h.persona?.nombre || '').includes(normStr(trabajadorOrigenNombre)) ||
+        String(h.persona?.cedula || '').includes(trabajadorOrigenNombre)
+      );
+
+      if (origenHistorial) {
+        diasTurno = Number(origenHistorial.form?.diasTurno) || 16;
+        horasAdicionales = Number(origenHistorial.form?.horasAdicionales) || 0;
+        tieneDescuentoPrestamo = Boolean((origenHistorial.resultado?.descuentoPrestamo || 0) > 0);
+        valorDescuentoPrestamo = Number(origenHistorial.resultado?.descuentoPrestamo) || 0;
+        tieneBono = Boolean((origenHistorial.form?.valorBono || origenHistorial.form?.bono || 0) > 0);
+        valorBono = Number(origenHistorial.form?.valorBono || origenHistorial.form?.bono) || 0;
+        nombreReferencia = origenHistorial.persona?.nombre;
+      } else {
+        const origenTrab = (todosTrabajadores || []).find(t =>
+          normStr(t.nombre).includes(normStr(trabajadorOrigenNombre)) ||
+          String(t.cedula).includes(trabajadorOrigenNombre)
+        );
+        if (origenTrab) {
+          nombreReferencia = origenTrab.nombre;
+        }
+      }
+    } else if (diasTurno === undefined && historial && historial.length > 0) {
       const ultima = historial[0];
       diasTurno = Number(ultima.form?.diasTurno) || 16;
       horasAdicionales = Number(ultima.form?.horasAdicionales) || 0;
@@ -1097,8 +1126,13 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
       diasTurno = 16;
     }
 
-    // 2. Extraer a los trabajadores destino
-    let textoNombres = q
+    // 2. Extraer a los trabajadores destino (excluyendo la parte de origen)
+    let qDestino = q;
+    if (matchOrigen && matchOrigen.index !== undefined) {
+      qDestino = q.substring(0, matchOrigen.index).trim();
+    }
+
+    let textoNombres = qDestino
       .replace(/\b(agrega|agregale|ingresa|ingresale|mete|metele|liquida|liquidale|calcula|calculale)\s*(a)?\b/gi, ' ')
       .replace(/\b(con|de|en|el|la|los|las|y|o|e|a|al|para|por)\b/gi, ' ')
       .replace(/\b(mismos?\s*(datos?|turnos?|dias?|valores?)|esos?\s*mismos?)\b/gi, ' ')
@@ -1106,7 +1140,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
       .replace(/\s+/g, ' ')
       .trim();
 
-    const cargoMencionado = cargosFiltroList.find(c => q.includes(c.toLowerCase()));
+    const cargoMencionado = cargosFiltroList.find(c => qDestino.includes(c.toLowerCase()));
     let trabajadoresDestino: any[] = [];
 
     if (cargoMencionado && (!textoNombres || textoNombres.length < 2)) {
@@ -1121,18 +1155,42 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         );
       }
     } else {
-      const partes = textoNombres.split(/[\s,]+/i).filter(p => p.length >= 2);
-      if (partes.length > 0) {
-        const agregadosIds = new Set<string>();
-        for (const p of partes) {
-          const encontrados = (todosTrabajadores || []).filter(t =>
-            normStr(t.nombre).includes(p) || String(t.cedula).includes(p)
-          );
-          for (const enc of encontrados) {
-            if (!agregadosIds.has(enc.id)) {
-              agregadosIds.add(enc.id);
-              trabajadoresDestino.push(enc);
+      // Separar por delimitadores de personas: ' y ', ' e ', ','
+      const personasPedidas = qDestino
+        .replace(/\b(agrega|agregale|ingresa|ingresale|mete|metele|liquida|liquidale)\s*(a)?\b/gi, '')
+        .split(/\s+(?:y|e)\s+|,/i)
+        .map(p => p.replace(/\b(con|los|mismos|datos|turnos|dias)\b/gi, '').trim())
+        .filter(p => p.length >= 2);
+
+      const agregadosIds = new Set<string>();
+
+      for (const personaStr of personasPedidas) {
+        const tokensPersona = personaStr.split(/\s+/).filter(tk => tk.length >= 2);
+        if (tokensPersona.length === 0) continue;
+
+        const candidatos = (todosTrabajadores || []).map(t => {
+          const nom = normStr(t.nombre || '');
+          const ced = String(t.cedula || '').trim();
+          let score = 0;
+          if (tokensPersona.every(tk => nom.includes(tk))) {
+            score = 100 + tokensPersona.length * 20;
+          } else {
+            const matchCount = tokensPersona.filter(tk => nom.includes(tk)).length;
+            if (matchCount > 0) {
+              score = 20 * matchCount;
             }
+          }
+          if (tokensPersona.some(tk => ced.includes(tk))) {
+            score = Math.max(score, 120);
+          }
+          return { t, score };
+        }).filter(c => c.score > 0).sort((a, b) => b.score - a.score);
+
+        if (candidatos.length > 0 && candidatos[0].score >= 40) {
+          const mejor = candidatos[0].t;
+          if (!agregadosIds.has(mejor.id)) {
+            agregadosIds.add(mejor.id);
+            trabajadoresDestino.push(mejor);
           }
         }
       }

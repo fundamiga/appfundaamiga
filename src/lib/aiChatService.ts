@@ -1317,6 +1317,204 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     };
   }
 
+  // ── 0.08 CONSULTA DE TRABAJADORES SIN CUENTA BANCARIA ──────────────────────
+  const esConsultaFaltaCuenta =
+    (/\b(falta|faltan|sin|no\s*tienen?|tienen?)\b/i.test(q) && /\b(cuenta|cuentas|cuneta|numero\s*de\s*cuenta|bancaria)\b/i.test(q)) ||
+    q.includes('faltan por cuenta') || q.includes('falta por cuenta') ||
+    q.includes('sin cuenta') || q.includes('sin numero de cuenta') ||
+    q.includes('no tienen cuenta') || q.includes('quienes no tienen cuenta') ||
+    q.includes('quienes faltan por cuenta') || q.includes('cuales faltan por cuenta');
+
+  if (esConsultaFaltaCuenta) {
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+    const { data: todosTrabajadores } = await supabase.from('trabajadores').select('*');
+
+    interface SinCuentaInfo {
+      nombre: string;
+      cedula: string;
+      cargo: string;
+      formaPago: string;
+      enNomina: boolean;
+      historialId?: string;
+      neto?: number;
+    }
+
+    const sinCuentaMap = new Map<string, SinCuentaInfo>();
+
+    // 1. Revisar trabajadores en nómina
+    for (const h of (historial || [])) {
+      const p = h.persona || {};
+      const forma = (p.formaPago || p.forma_pago || '').trim();
+      const cuenta = String(p.numeroCuenta || p.numero_cuenta || '').trim();
+      const esMetodoElectronico = forma.toLowerCase() !== 'efectivo' && forma !== '';
+      const cuentaInvalida = !cuenta || cuenta === '0' || cuenta.toLowerCase().includes('sin') || cuenta.toLowerCase().includes('pendiente') || cuenta.length < 6;
+
+      if (esMetodoElectronico && cuentaInvalida) {
+        const ced = String(p.cedula || '').trim();
+        sinCuentaMap.set(ced || p.nombre, {
+          nombre: p.nombre || 'Sin nombre',
+          cedula: ced,
+          cargo: p.cargo || 'General',
+          formaPago: forma,
+          enNomina: true,
+          historialId: h.id,
+          neto: h.resultado?.neto || 0
+        });
+      }
+    }
+
+    // 2. Revisar resto de trabajadores en BD general
+    for (const t of (todosTrabajadores || [])) {
+      const ced = String(t.cedula || '').trim();
+      if (sinCuentaMap.has(ced || t.nombre)) continue;
+
+      const forma = (t.forma_pago || '').trim();
+      const cuenta = String(t.numero_cuenta || '').trim();
+      const esMetodoElectronico = forma.toLowerCase() !== 'efectivo' && forma !== '';
+      const cuentaInvalida = !cuenta || cuenta === '0' || cuenta.toLowerCase().includes('sin') || cuenta.toLowerCase().includes('pendiente') || cuenta.length < 6;
+
+      if (esMetodoElectronico && cuentaInvalida) {
+        sinCuentaMap.set(ced || t.nombre, {
+          nombre: t.nombre || 'Sin nombre',
+          cedula: ced,
+          cargo: t.cargo || 'General',
+          formaPago: forma,
+          enNomina: false
+        });
+      }
+    }
+
+    const listaSinCuenta = Array.from(sinCuentaMap.values());
+
+    if (listaSinCuenta.length === 0) {
+      return {
+        text: `🎉 **¡Excelente! No hay trabajadores pendientes por registrar cuenta bancaria.**\n\n` +
+          `Todos los trabajadores con pago por transferencia (Bancolombia, Davivienda, Nequi, etc.) tienen su número de cuenta debidamente registrado.`
+      };
+    }
+
+    const lineas = listaSinCuenta.map(item => {
+      const estadoNomina = item.enNomina ? `📊 En nómina: **${fmt(item.neto || 0)}**` : `👤 Registrado en base de datos`;
+      return `• 👤 **${item.nombre}** (C.C. \`${item.cedula || 'Sin C.C.'}\`)\n` +
+        `   • 🏢 Parqueadero: ${item.cargo}\n` +
+        `   • 🏦 Banco: **${item.formaPago}** ⚠️ *(Sin número de cuenta)*\n` +
+        `   • ${estadoNomina}`;
+    });
+
+    const acciones: ChatAction[] = [];
+
+    const enTabla = listaSinCuenta.filter(i => i.enNomina).slice(0, 3);
+    for (const item of enTabla) {
+      acciones.push({
+        label: `✏️ Abrir editor de ${item.nombre.split(' ')[0]} en tabla`,
+        tipo: 'EDITAR_EN_TABLA',
+        payload: { cedula: item.cedula, nombre: item.nombre }
+      });
+    }
+
+    return {
+      text: `⚠️ **Trabajadores sin número de cuenta bancaria** (${listaSinCuenta.length} personas):\n\n` +
+        `Tienen asignada una forma de pago por transferencia pero su cuenta está vacía o incompleta:\n\n` +
+        lineas.join('\n\n') + `\n\n` +
+        `💬 *Para asignarle la cuenta a cualquiera de ellos, puedes pedirme por ejemplo:*\n` +
+        `• *"Cámbiale la cuenta a ${listaSinCuenta[0].nombre.split(' ')[0]} a 1234567890"*`,
+      acciones
+    };
+  }
+
+  // ── 0.09 CONSULTA DE PERSONAL POR BANCO O PARQUEADERO ──────────────────────
+  const tienePalabraListarPersonal = /\b(cuales|quienes|lista|dime|ver|mostrar|cuantos|personal|trabajadores|empleados|gente|filas)\b/i.test(q);
+  const esConsultaQuienesPorBancoOCargo =
+    !q.includes('falta') && !q.includes('sin cuenta') && !q.includes('no tiene') && !q.includes('cambia') && !q.includes('marca') && (
+      (tienePalabraListarPersonal && (cargosFiltroList.some(c => q.includes(c.toLowerCase())) || Object.keys(mapaBancosFiltro).some(b => q.includes(b)))) ||
+      (/\b(quienes|cuales)\s*(son|estan|cobran|pagan|tienen)?\s*(de|por|en)?\s*(davivienda|bancolombia|nequi|daviplata|villas|bbva|bogota|popular|social|efectivo|transferencia)/i.test(q))
+    );
+
+  if (esConsultaQuienesPorBancoOCargo) {
+    const cargoFiltro = cargosFiltroList.find(c => q.includes(c.toLowerCase()));
+    const bancoFiltroKey = Object.keys(mapaBancosFiltro).find(b => q.includes(b));
+    const bancoFiltro = bancoFiltroKey ? mapaBancosFiltro[bancoFiltroKey] : undefined;
+
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+    const { data: todosTrabajadores } = await supabase.from('trabajadores').select('*');
+
+    let filtradosHistorial = (historial || []);
+    let filtradosTrabajadores = (todosTrabajadores || []);
+    let tituloGrupo = '';
+
+    if (cargoFiltro) {
+      filtradosHistorial = filtradosHistorial.filter(h => (h.persona?.cargo || '').toLowerCase() === cargoFiltro.toLowerCase());
+      filtradosTrabajadores = filtradosTrabajadores.filter(t => (t.cargo || '').toLowerCase() === cargoFiltro.toLowerCase());
+      tituloGrupo = `🏢 Parqueadero ${cargoFiltro}`;
+    } else if (bancoFiltro) {
+      filtradosHistorial = filtradosHistorial.filter(h => (h.persona?.formaPago || '').toLowerCase() === bancoFiltro.toLowerCase());
+      filtradosTrabajadores = filtradosTrabajadores.filter(t => (t.forma_pago || '').toLowerCase() === bancoFiltro.toLowerCase());
+      tituloGrupo = `🏦 Forma de Pago ${bancoFiltro}`;
+    }
+
+    if (filtradosHistorial.length === 0 && filtradosTrabajadores.length === 0) {
+      return {
+        text: `🤖 No se encontraron trabajadores registrados con **${tituloGrupo}** en el sistema.`
+      };
+    }
+
+    const tNeto = filtradosHistorial.reduce((acc, h) => acc + (h.resultado?.neto || 0), 0);
+    const pagados = filtradosHistorial.filter(h => h.estado === 'Pagado');
+    const pendientes = filtradosHistorial.filter(h => h.estado !== 'Pagado');
+
+    const lineasDetalle: string[] = [];
+
+    filtradosHistorial.forEach((h, idx) => {
+      const p = h.persona || {};
+      const cta = p.numeroCuenta ? `Cta: \`${p.numeroCuenta}\`` : '⚠️ *Sin cuenta*';
+      const estadoBadge = h.estado === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente';
+      const netoStr = fmt(h.resultado?.neto || 0);
+      lineasDetalle.push(
+        `${idx + 1}. **${p.nombre}** (C.C. \`${p.cedula || 'S/C'}\`)\n` +
+        `   • ${cargoFiltro ? `🏦 ${p.formaPago} | ${cta}` : `🏢 ${p.cargo} | ${cta}`}\n` +
+        `   • 📊 ${h.form?.diasTurno || h.form?.turnos || 0} turnos → **${netoStr}** (${estadoBadge})`
+      );
+    });
+
+    const cedulasEnNomina = new Set(filtradosHistorial.map(h => String(h.persona?.cedula || '').trim()));
+    const noLiquidadosAun = filtradosTrabajadores.filter(t => !cedulasEnNomina.has(String(t.cedula).trim()));
+
+    let extraNoLiquidados = '';
+    if (noLiquidadosAun.length > 0) {
+      extraNoLiquidados = `\n\n⏳ **Aún no ingresados a nómina activa (${noLiquidadosAun.length})**:\n` +
+        noLiquidadosAun.map(t => `• 👤 **${t.nombre}** (C.C. \`${t.cedula || 'S/C'}\`) — Cuenta: \`${t.numero_cuenta || 'Sin cuenta'}\``).join('\n');
+    }
+
+    const acciones: ChatAction[] = [
+      {
+        label: `🔍 Filtrar tabla por ${cargoFiltro || bancoFiltro}`,
+        tipo: 'APLICAR_FILTROS',
+        payload: cargoFiltro ? { cargo: cargoFiltro } : { banco: bancoFiltro }
+      }
+    ];
+
+    if (pendientes.length > 0) {
+      const totalPend = pendientes.reduce((acc, h) => acc + (h.resultado?.neto || 0), 0);
+      acciones.push({
+        label: `⚡ Pagar los de ${cargoFiltro || bancoFiltro} (${pendientes.length} pendientes — ${fmt(totalPend)})`,
+        tipo: 'PAGO_MASIVO',
+        payload: {
+          tipoFiltro: cargoFiltro ? 'cargo' : 'banco',
+          valorFiltro: cargoFiltro || bancoFiltro
+        }
+      });
+    }
+
+    return {
+      text: `📋 **Personal asignado a: ${tituloGrupo}**\n\n` +
+        `• 👥 **En nómina actual**: **${filtradosHistorial.length} personas** (${fmt(tNeto)})\n` +
+        `   • ✅ Pagados: ${pagados.length} | ⏳ Pendientes: ${pendientes.length}\n\n` +
+        lineasDetalle.join('\n\n') +
+        extraNoLiquidados,
+      acciones
+    };
+  }
+
   // ── 0.1 MODIFICACIÓN DE DATOS (SOLO A PETICIÓN EXPLÍCITA) ───────────────────
   // Solo responder con mensaje de ayuda si NO se menciona a ninguna persona ni se especifica una acción concreta
   const esPreguntaInformativaModificar =

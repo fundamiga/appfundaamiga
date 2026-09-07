@@ -701,6 +701,8 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     .replace(/\b(cuadroo|cudaros?|cuadroa)\b/g, 'cuadro')
     .replace(/\b(cuant[ao]ss?|cuantoa|cuntos|cuatas)\b/g, 'cuantos')
     .replace(/\b(mimso|mimsos|mismoo|misos|miso|mismas|misma)\b/g, (m) => m.endsWith('s') ? 'mismos' : 'mismo')
+    .replace(/\b(erores|eror|errrores|erorr|herrores|herror)\b/g, (m) => m.includes('es') ? 'errores' : 'error')
+    .replace(/\b(algund|algu|algún)\b/g, 'algun')
     .replace(/\b5\s*-\s*6\b/g, '5 - 6')
     .replace(/\b6\s*-\s*6\b/g, '6 - 6')
     .replace(/\b2\s*-\s*10\b/g, '2 - 10');
@@ -1422,12 +1424,183 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     };
   }
 
+  // ── 0.05 AUDITORÍA Y DETECCIÓN DE ANOMALÍAS / TRABAJADORES REPETIDOS ────────
+  const esConsultaRepetidos =
+    /\b(repetid[oas]+|duplicad[oas]+)\b/i.test(q) ||
+    q.includes('trabajador repetido') || q.includes('trabajadores repetidos') ||
+    q.includes('alguien repetido') || q.includes('hay repetidos') ||
+    q.includes('hay repetido') || q.includes('quienes estan repetidos') ||
+    q.includes('quien esta repetido') || q.includes('cuentas repetidas') ||
+    q.includes('algun repetido') || q.includes('algun trabajador repetido');
+
+  const esAuditoria =
+    /\b(error|errores|fallas?|problemas?|anomalias?|inconsistencias?|alertas?)\b/i.test(q) ||
+    q.includes('auditoria') || q.includes('auditar') ||
+    q.includes('revisa la nomina') || q.includes('revisar nomina') || q.includes('revisa el cuadro') || q.includes('revisar el cuadro') ||
+    q.includes('hay error') || q.includes('hay errores') || q.includes('algun error') || q.includes('detectar errores') ||
+    esConsultaRepetidos;
+
+  if (esAuditoria) {
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+
+    if (!historial || historial.length === 0) {
+      return { text: `📋 El cuadro de nómina está vacío actualmente. No hay registros para auditar.` };
+    }
+
+    const anomalías: string[] = [];
+
+    // 1. Duplicados en la nómina
+    const conteoCedulas = new Map<string, typeof historial>();
+    historial.forEach(h => {
+      const c = String(h.persona?.cedula || '').trim();
+      if (c) {
+        if (!conteoCedulas.has(c)) conteoCedulas.set(c, []);
+        conteoCedulas.get(c)!.push(h);
+      }
+    });
+
+    const duplicados = Array.from(conteoCedulas.entries()).filter(([_, lista]) => lista.length > 1);
+
+    // Respuesta directa si la pregunta fue específicamente sobre repetidos o duplicados
+    if (esConsultaRepetidos) {
+      if (duplicados.length > 0) {
+        let dTxt = `🚨 **Trabajadores Repetidos detectados en el cuadro de nómina (${duplicados.length})**:\n\n`;
+        const accionesRepetidos: ChatAction[] = [];
+        duplicados.forEach(([ced, lista]) => {
+          dTxt += `• 👤 **${lista[0].persona?.nombre}** (C.C. \`${ced}\`) aparece **${lista.length} veces** en el cuadro:\n`;
+          lista.forEach((item, idx) => {
+            const turnos = item.form?.diasTurno || 0;
+            const neto = item.resultado?.neto || 0;
+            const estado = item.estado || 'Pendiente';
+            dTxt += `   - Registro ${idx + 1}: ${turnos} turnos → **${fmt(neto)}** (${estado === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente'})\n`;
+          });
+          dTxt += `\n`;
+          accionesRepetidos.push({
+            label: `🗑️ Eliminar duplicado de ${lista[0].persona?.nombre.split(' ')[0]}`,
+            tipo: 'CONSULTAR_DETALLE',
+            payload: `Elimina a ${lista[0].persona?.nombre} de la tabla`
+          });
+          accionesRepetidos.push({
+            label: `📍 Ubicar a ${lista[0].persona?.nombre.split(' ')[0]} en la tabla`,
+            tipo: 'DESPLAZAR_TABLA',
+            payload: { cedula: ced, nombre: lista[0].persona?.nombre }
+          });
+        });
+        dTxt += `💡 *Puedes pedirme "Elimina a [Nombre] de la tabla" para remover el duplicado que no corresponda.*`;
+        return {
+          text: dTxt.trim(),
+          acciones: accionesRepetidos.slice(0, 6)
+        };
+      } else {
+        return {
+          text: `✅ **No hay trabajadores repetidos en el cuadro de nómina.**\n\nTodos los registros de la quincena tienen cédulas únicas sin duplicados.`,
+          acciones: [
+            {
+              label: `🛡️ Auditoría completa de nómina`,
+              tipo: 'CONSULTAR_DETALLE',
+              payload: 'Auditar nómina'
+            },
+            {
+              label: `📊 Ver informe de nómina`,
+              tipo: 'CONSULTAR_DETALLE',
+              payload: 'Dame un informe de cómo va la nómina'
+            }
+          ]
+        };
+      }
+    }
+
+    if (duplicados.length > 0) {
+      let dTxt = `🚨 **Duplicados detectados en el cuadro (${duplicados.length})**:\n`;
+      duplicados.forEach(([ced, lista]) => {
+        dTxt += `   • 👤 **${lista[0].persona?.nombre}** (C.C. \`${ced}\`) aparece **${lista.length} veces** en la nómina.\n`;
+      });
+      anomalías.push(dTxt);
+    }
+
+    // 2. Turnos atípicos (> 16 turnos en quincena) o muchas horas extra (> 12 hrs)
+    const turnosAltos = historial.filter(h => (h.form?.diasTurno || 0) > 16 || (h.form?.horasAdicionales || 0) > 12);
+    if (turnosAltos.length > 0) {
+      let tTxt = `⚠️ **Turnos o recargos atípicos (${turnosAltos.length})**:\n`;
+      turnosAltos.forEach(h => {
+        tTxt += `   • 👤 **${h.persona?.nombre}**: **${h.form?.diasTurno || 0} turnos**, **${h.form?.horasAdicionales || 0} hrs extra**.\n`;
+      });
+      anomalías.push(tTxt);
+    }
+
+    // 3. Tarifas en cero
+    const tarifaCero = historial.filter(h => (h.persona?.valorTurno || 0) <= 0);
+    if (tarifaCero.length > 0) {
+      let zTxt = `⚠️ **Liquidaciones con tarifa de turno en $0 (${tarifaCero.length})**:\n`;
+      tarifaCero.forEach(h => {
+        zTxt += `   • 👤 **${h.persona?.nombre}** (C.C. \`${h.persona?.cedula}\`)\n`;
+      });
+      anomalías.push(zTxt);
+    }
+
+    // 4. Inconsistencias de cuenta bancaria
+    const cuentasInvalidas = historial.filter(h => {
+      const forma = (h.persona?.formaPago || '').toLowerCase();
+      if (forma === 'efectivo') return false;
+      const cta = (h.persona?.numeroCuenta || '').replace(/\D/g, '');
+      return cta.length < 7;
+    });
+    if (cuentasInvalidas.length > 0) {
+      let cTxt = `💳 **Cuentas bancarias dudosas o incompletas (${cuentasInvalidas.length})**:\n`;
+      cuentasInvalidas.forEach(h => {
+        cTxt += `   • 👤 **${h.persona?.nombre}** (${h.persona?.formaPago}): \`${h.persona?.numeroCuenta || 'Sin cuenta'}\`\n`;
+      });
+      anomalías.push(cTxt);
+    }
+
+    // 5. Sin parqueadero / cargo
+    const sinCargo = historial.filter(h => !h.persona?.cargo || h.persona?.cargo === 'No asignado');
+    if (sinCargo.length > 0) {
+      let scTxt = `🏢 **Sin parqueadero asignado (${sinCargo.length})**:\n`;
+      sinCargo.forEach(h => {
+        scTxt += `   • 👤 **${h.persona?.nombre}**\n`;
+      });
+      anomalías.push(scTxt);
+    }
+
+    if (anomalías.length === 0) {
+      return {
+        text: `🛡️ **Auditoría de Nómina en Vivo - Estado Impecable**:\n\n` +
+          `✅ Se auditaron **${historial.length} registros** en el cuadro de nómina.\n` +
+          `• 0 personas duplicadas.\n` +
+          `• 0 turnos fuera de rango.\n` +
+          `• Todas las tarifas y cuentas bancarias son válidas.\n\n` +
+          `🎉 **¡La nómina está 100% lista y consistente para pagos!**`
+      };
+    }
+
+    return {
+      text: `🛡️ **Resultado de Auditoría de Nómina (${anomalías.length} alertas detectadas)**:\n\n` +
+        anomalías.join('\n') + `\n` +
+        `💡 *Puedes pedirme modificar o abrir el editor de cualquiera de estas personas escribiendo su nombre.*`,
+      acciones: [
+        {
+          label: `👥 Ver trabajadores duplicados`,
+          tipo: 'CONSULTAR_DETALLE',
+          payload: 'quienes estan repetidos'
+        },
+        {
+          label: `📊 Ver informe de nómina`,
+          tipo: 'CONSULTAR_DETALLE',
+          payload: 'Dame un informe de cómo va la nómina'
+        }
+      ]
+    };
+  }
+
   // ── 0.0 LIQUIDACIÓN Y REGISTRO EN LA NÓMINA EN VIVO ─────────────────────────
   const verbosLiquidar = /\b(liquida|liquidale|ingresa|ingresale|calcula|calculale|mete|metele|agrega|agregale)\b/i;
   const esIntentoNomina =
-    Boolean(context?.liquidandoPendiente) ||
-    (verbosLiquidar.test(q) && (q.includes('nomina') || q.includes('cuadro') || q.includes('tabla') || /\b(\d+)\s*(?:dias?|turnos?)\b/.test(q) || /\bcon\s*(\d+)\s*(?:dias?|turnos?)\b/.test(q))) ||
-    (q.includes('a la nomina') || q.includes('al cuadro') || q.includes('a la tabla') || q.includes('en la nomina') || q.includes('en el cuadro') || q.includes('en la tabla') || q.includes('agregar trabajador') || q.includes('agregar trabajadores') || q.includes('ingresar trabajador') || q.includes('ingresar trabajadores'));
+    !esAuditoria && (
+      Boolean(context?.liquidandoPendiente) ||
+      (verbosLiquidar.test(q) && (q.includes('nomina') || q.includes('cuadro') || q.includes('tabla') || /\b(\d+)\s*(?:dias?|turnos?)\b/.test(q) || /\bcon\s*(\d+)\s*(?:dias?|turnos?)\b/.test(q))) ||
+      (q.includes('a la nomina') || q.includes('al cuadro') || q.includes('a la tabla') || q.includes('en la nomina') || q.includes('en el cuadro') || q.includes('en la tabla') || q.includes('agregar trabajador') || q.includes('agregar trabajadores') || q.includes('ingresar trabajador') || q.includes('ingresar trabajadores'))
+    );
 
   if (esIntentoNomina) {
     const { data: todosTrabajadores } = await supabase.from('trabajadores').select('*');
@@ -1861,162 +2034,6 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         acciones: listaAcciones
       };
     }
-  }
-
-  // ── 0.05 AUDITORÍA Y DETECCIÓN DE ANOMALÍAS / TRABAJADORES REPETIDOS ────────
-  const esConsultaRepetidos =
-    /\b(repetid[oas]+|duplicad[oas]+)\b/i.test(q) ||
-    q.includes('trabajador repetido') || q.includes('trabajadores repetidos') ||
-    q.includes('alguien repetido') || q.includes('hay repetidos') ||
-    q.includes('hay repetido') || q.includes('quienes estan repetidos') ||
-    q.includes('quien esta repetido') || q.includes('cuentas repetidas') ||
-    q.includes('algun repetido') || q.includes('algun trabajador repetido');
-
-  const esAuditoria =
-    q.includes('auditoria') || q.includes('auditar') ||
-    q.includes('revisa la nomina') || q.includes('revisar nomina') || q.includes('revisa el cuadro') || q.includes('revisar el cuadro') ||
-    q.includes('hay errores') || q.includes('detectar errores') || q.includes('anomalias') || q.includes('inconsistencias') ||
-    esConsultaRepetidos;
-
-  if (esAuditoria) {
-    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
-
-    if (!historial || historial.length === 0) {
-      return { text: `📋 El cuadro de nómina está vacío actualmente. No hay registros para auditar.` };
-    }
-
-    const anomalías: string[] = [];
-
-    // 1. Duplicados en la nómina
-    const conteoCedulas = new Map<string, typeof historial>();
-    historial.forEach(h => {
-      const c = String(h.persona?.cedula || '').trim();
-      if (c) {
-        if (!conteoCedulas.has(c)) conteoCedulas.set(c, []);
-        conteoCedulas.get(c)!.push(h);
-      }
-    });
-
-    const duplicados = Array.from(conteoCedulas.entries()).filter(([_, lista]) => lista.length > 1);
-
-    // Respuesta directa si la pregunta fue específicamente sobre repetidos o duplicados
-    if (esConsultaRepetidos) {
-      if (duplicados.length > 0) {
-        let dTxt = `🚨 **Trabajadores Repetidos detectados en el cuadro de nómina (${duplicados.length})**:\n\n`;
-        const accionesRepetidos: ChatAction[] = [];
-        duplicados.forEach(([ced, lista]) => {
-          dTxt += `• 👤 **${lista[0].persona?.nombre}** (C.C. \`${ced}\`) aparece **${lista.length} veces** en el cuadro:\n`;
-          lista.forEach((item, idx) => {
-            const turnos = item.form?.diasTurno || 0;
-            const neto = item.resultado?.neto || 0;
-            const estado = item.estado || 'Pendiente';
-            dTxt += `   - Registro ${idx + 1}: ${turnos} turnos → **${fmt(neto)}** (${estado === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente'})\n`;
-          });
-          dTxt += `\n`;
-          accionesRepetidos.push({
-            label: `🗑️ Eliminar duplicado de ${lista[0].persona?.nombre.split(' ')[0]}`,
-            tipo: 'CONSULTAR_DETALLE',
-            payload: `Elimina a ${lista[0].persona?.nombre} de la tabla`
-          });
-          accionesRepetidos.push({
-            label: `📍 Ubicar a ${lista[0].persona?.nombre.split(' ')[0]} en la tabla`,
-            tipo: 'DESPLAZAR_TABLA',
-            payload: { cedula: ced, nombre: lista[0].persona?.nombre }
-          });
-        });
-        dTxt += `💡 *Puedes pedirme "Elimina a [Nombre] de la tabla" para remover el duplicado que no corresponda.*`;
-        return {
-          text: dTxt.trim(),
-          acciones: accionesRepetidos.slice(0, 6)
-        };
-      } else {
-        return {
-          text: `✅ **No hay trabajadores repetidos en el cuadro de nómina.**\n\nTodos los registros de la quincena tienen cédulas únicas sin duplicados.`,
-          acciones: [
-            {
-              label: `🛡️ Auditoría completa de nómina`,
-              tipo: 'CONSULTAR_DETALLE',
-              payload: 'Auditar nómina'
-            },
-            {
-              label: `📊 Ver informe de nómina`,
-              tipo: 'CONSULTAR_DETALLE',
-              payload: 'Dame un informe de cómo va la nómina'
-            }
-          ]
-        };
-      }
-    }
-
-    if (duplicados.length > 0) {
-      let dTxt = `🚨 **Duplicados detectados en el cuadro (${duplicados.length})**:\n`;
-      duplicados.forEach(([ced, lista]) => {
-        dTxt += `   • 👤 **${lista[0].persona?.nombre}** (C.C. \`${ced}\`) aparece **${lista.length} veces** en la nómina.\n`;
-      });
-      anomalías.push(dTxt);
-    }
-
-    // 2. Turnos atípicos (> 16 turnos en quincena) o muchas horas extra (> 12 hrs)
-    const turnosAltos = historial.filter(h => (h.form?.diasTurno || 0) > 16 || (h.form?.horasAdicionales || 0) > 12);
-    if (turnosAltos.length > 0) {
-      let tTxt = `⚠️ **Turnos o recargos atípicos (${turnosAltos.length})**:\n`;
-      turnosAltos.forEach(h => {
-        tTxt += `   • 👤 **${h.persona?.nombre}**: **${h.form?.diasTurno || 0} turnos**, **${h.form?.horasAdicionales || 0} hrs extra**.\n`;
-      });
-      anomalías.push(tTxt);
-    }
-
-    // 3. Tarifas en cero
-    const tarifaCero = historial.filter(h => (h.persona?.valorTurno || 0) <= 0);
-    if (tarifaCero.length > 0) {
-      let zTxt = `⚠️ **Liquidaciones con tarifa de turno en $0 (${tarifaCero.length})**:\n`;
-      tarifaCero.forEach(h => {
-        zTxt += `   • 👤 **${h.persona?.nombre}** (C.C. \`${h.persona?.cedula}\`)\n`;
-      });
-      anomalías.push(zTxt);
-    }
-
-    // 4. Inconsistencias de cuenta bancaria
-    const cuentasInvalidas = historial.filter(h => {
-      const forma = (h.persona?.formaPago || '').toLowerCase();
-      if (forma === 'efectivo') return false;
-      const cta = (h.persona?.numeroCuenta || '').replace(/\D/g, '');
-      return cta.length < 7;
-    });
-    if (cuentasInvalidas.length > 0) {
-      let cTxt = `💳 **Cuentas bancarias dudosas o incompletas (${cuentasInvalidas.length})**:\n`;
-      cuentasInvalidas.forEach(h => {
-        cTxt += `   • 👤 **${h.persona?.nombre}** (${h.persona?.formaPago}): \`${h.persona?.numeroCuenta || 'Sin cuenta'}\`\n`;
-      });
-      anomalías.push(cTxt);
-    }
-
-    // 5. Sin parqueadero / cargo
-    const sinCargo = historial.filter(h => !h.persona?.cargo || h.persona?.cargo === 'No asignado');
-    if (sinCargo.length > 0) {
-      let scTxt = `🏢 **Sin parqueadero asignado (${sinCargo.length})**:\n`;
-      sinCargo.forEach(h => {
-        scTxt += `   • 👤 **${h.persona?.nombre}**\n`;
-      });
-      anomalías.push(scTxt);
-    }
-
-    if (anomalías.length === 0) {
-      return {
-        text: `🛡️ **Auditoría de Nómina en Vivo - Estado Impecable**:\n\n` +
-          `✅ Se auditaron **${historial.length} registros** en el cuadro de nómina.\n` +
-          `• 0 personas duplicadas.\n` +
-          `• 0 turnos fuera de rango.\n` +
-          `• Todas las tarifas y cuentas bancarias son válidas.\n\n` +
-          `🎉 **¡La nómina está 100% lista y consistente para pagos!**`
-      };
-    }
-
-    return {
-      text: `🛡️ **Resultado de Auditoría de Nómina (${anomalías.length} alertas detectadas)**:\n\n` +
-        anomalías.join('\n') + `\n` +
-        `💡 *Puedes pedirme modificar o abrir el editor de cualquiera de estas personas escribiendo su nombre.*`
-    };
   }
 
   // ── 0.06 CONTROL DE FILTROS DE TABLA DESDE EL CHAT ──────────────────────────

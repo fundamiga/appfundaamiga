@@ -4,7 +4,7 @@ import { calcularDescuentoARLPila } from '@/utils/calcularDescuentoARL';
 
 export interface ChatAction {
   label: string;
-  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO' | 'DESPLAZAR_TABLA' | 'EDITAR_EN_TABLA' | 'LIQUIDAR_TRABAJADOR' | 'PAGO_MASIVO' | 'APLICAR_FILTROS' | 'CREAR_TRABAJADOR' | 'ELIMINAR_DE_NOMINA' | 'MODIFICAR_TURNOS' | 'NAVEGAR_RUTA';
+  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO' | 'DESPLAZAR_TABLA' | 'EDITAR_EN_TABLA' | 'LIQUIDAR_TRABAJADOR' | 'LIQUIDAR_MASIVO' | 'PAGO_MASIVO' | 'APLICAR_FILTROS' | 'CREAR_TRABAJADOR' | 'ELIMINAR_DE_NOMINA' | 'MODIFICAR_TURNOS' | 'NAVEGAR_RUTA';
   payload?: any;
 }
 
@@ -24,8 +24,18 @@ export interface ChatContext {
     cedula?: string;
   };
   modificacionPendiente?: {
-    tipo: 'MODIFICAR_DATO' | 'MODIFICAR_TURNOS' | 'PAGO_MASIVO';
+    tipo: 'MODIFICAR_DATO' | 'MODIFICAR_TURNOS' | 'PAGO_MASIVO' | 'LIQUIDAR_DIRECTA' | 'LIQUIDAR_MASIVO';
     payload: any;
+  };
+  ultimaLiquidacion?: {
+    diasTurno: number;
+    turnosAdicionales?: number;
+    horasAdicionales?: number;
+    tieneBono?: boolean;
+    valorBono?: number;
+    tieneDescuentoPrestamo?: boolean;
+    valorDescuentoPrestamo?: number;
+    nombreReferencia?: string;
   };
 }
 
@@ -256,6 +266,136 @@ export async function executeLiquidacionDirecta(payload: {
     };
   } catch (err: any) {
     return { success: false, message: `❌ Error inesperado: ${err?.message || 'Error de conexión'}` };
+  }
+}
+
+export async function executeLiquidacionMasiva(payload: {
+  liquidaciones: Array<{
+    persona: {
+      nombre: string;
+      cedula: string;
+      cargo: string;
+      valorTurno: number;
+      valorHoraAdicional: number;
+      formaPago: string;
+      numeroCuenta?: string;
+    };
+    diasTurno: number;
+    turnosAdicionales?: number;
+    horasAdicionales?: number;
+    tieneBono?: boolean;
+    valorBono?: number;
+    tieneDescuentoPrestamo?: boolean;
+    valorDescuentoPrestamo?: number;
+  }>;
+}): Promise<{ success: boolean; message: string; registradas: number }> {
+  try {
+    const items = payload.liquidaciones || [];
+    if (items.length === 0) {
+      return { success: false, message: '❌ No se proporcionaron liquidaciones para registrar.', registradas: 0 };
+    }
+
+    const fmtOp = (n: number) => n.toLocaleString('es-CO');
+    const quincena = obtenerPeriodo();
+
+    const filasParaInsertar = items.map((item, idx) => {
+      const p = item.persona;
+      const diasTurno = Number(item.diasTurno) || 0;
+      const turnosAdicionales = Number(item.turnosAdicionales) || 0;
+      const horasAdicionales = Number(item.horasAdicionales) || 0;
+      const tieneBono = Boolean(item.tieneBono);
+      const valorBono = Number(item.valorBono) || 0;
+      const tieneDescuentoPrestamo = Boolean(item.tieneDescuentoPrestamo);
+      const valorDescuentoPrestamo = Number(item.valorDescuentoPrestamo) || 0;
+
+      const valorDescuentoSeguridad = calcularDescuentoARLPila(diasTurno);
+      const subtotalTurnos = diasTurno * (p.valorTurno || 0);
+      const subtotalTurnosAdicionales = turnosAdicionales * (p.valorTurno || 0);
+      const subtotalHoras = horasAdicionales * (p.valorHoraAdicional || 0);
+      const bono = tieneBono ? valorBono : 0;
+      const descuentoSeguridad = diasTurno > 0 ? valorDescuentoSeguridad : 0;
+      const descuentoPrestamo = tieneDescuentoPrestamo ? valorDescuentoPrestamo : 0;
+
+      const totalBruto = subtotalTurnos + subtotalTurnosAdicionales + subtotalHoras + bono + descuentoSeguridad;
+      const totalDescuentos = descuentoSeguridad + descuentoPrestamo;
+      const neto = Math.max(0, totalBruto - totalDescuentos);
+
+      const resultado = {
+        subtotalTurnos,
+        subtotalTurnosAdicionales,
+        subtotalHoras,
+        bono,
+        totalBruto,
+        descuentoSeguridad,
+        descuentoPrestamo,
+        totalDescuentos,
+        neto,
+        operaciones: {
+          turnos: `${diasTurno} días × ${fmtOp(p.valorTurno)} = ${fmtOp(subtotalTurnos)}`,
+          turnosAdicionales: `${turnosAdicionales} turnos × ${fmtOp(p.valorTurno)} = ${fmtOp(subtotalTurnosAdicionales)}`,
+          horas: `${horasAdicionales} horas × ${fmtOp(p.valorHoraAdicional)} = ${fmtOp(subtotalHoras)}`,
+          seguridad: `${fmtOp(descuentoSeguridad)}`,
+          prestamo: `${fmtOp(descuentoPrestamo)}`,
+          bono: `${fmtOp(bono)}`,
+          totalBruto: `${fmtOp(totalBruto)}`,
+          totalDescuentos: `${fmtOp(totalDescuentos)}`,
+          neto: `${fmtOp(neto)}`
+        }
+      };
+
+      const form = {
+        diasTurno,
+        turnosAdicionales,
+        horasAdicionales,
+        bono,
+        tieneBono,
+        descripcionBono: '',
+        prestamo: descuentoPrestamo,
+        tienePrestamo: tieneDescuentoPrestamo,
+        pagoQuincena: false
+      };
+
+      return {
+        id: `${Date.now()}-${idx}-${Math.random().toString(36).substr(2, 5)}`,
+        persona: {
+          nombre: p.nombre,
+          cedula: p.cedula,
+          cargo: p.cargo || 'General',
+          valorTurno: p.valorTurno || 0,
+          valorHoraAdicional: p.valorHoraAdicional || 0,
+          formaPago: p.formaPago || 'Bancaria',
+          numeroCuenta: p.numeroCuenta || ''
+        },
+        form,
+        resultado,
+        fecha: new Date().toLocaleString('es-CO'),
+        estado: 'Pendiente',
+        quincena
+      };
+    });
+
+    const { error } = await supabase
+      .from('historial_liquidaciones')
+      .insert(filasParaInsertar);
+
+    if (error) {
+      return { success: false, message: `❌ Error al guardar en Supabase: ${error.message}`, registradas: 0 };
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('fundamiga:recargar-datos'));
+    }
+
+    const nombresFmt = items.map(i => i.persona.nombre.split(' ')[0]).join(', ');
+    return {
+      success: true,
+      message: `🎉 **¡Se registraron exitosamente ${items.length} liquidaciones en el cuadro de nómina!**\n\n` +
+        `• 👥 **Personal ingresado**: ${nombresFmt}\n` +
+        `• 📋 *El cuadro de nómina se ha sincronizado en vivo con los nuevos registros.*`,
+      registradas: items.length
+    };
+  } catch (err: any) {
+    return { success: false, message: `❌ Error inesperado: ${err?.message || 'Error al procesar'}`, registradas: 0 };
   }
 }
 
@@ -577,6 +717,24 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
             modificacionPendiente: undefined
           }
         };
+      } else if (context.modificacionPendiente.tipo === 'LIQUIDAR_DIRECTA') {
+        const res = await executeLiquidacionDirecta(context.modificacionPendiente.payload);
+        return {
+          text: res.message,
+          nuevoContexto: {
+            ultimoTrabajador: context.ultimoTrabajador,
+            modificacionPendiente: undefined
+          }
+        };
+      } else if (context.modificacionPendiente.tipo === 'LIQUIDAR_MASIVO') {
+        const res = await executeLiquidacionMasiva(context.modificacionPendiente.payload);
+        return {
+          text: res.message,
+          nuevoContexto: {
+            ultimoTrabajador: context.ultimoTrabajador,
+            modificacionPendiente: undefined
+          }
+        };
       }
     }
 
@@ -602,6 +760,27 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
       }
     };
   }
+
+  const cargosFiltroList = [
+    'CONTRATISTAS DE ADMINISTRACION', '5 - 6', '6 - 6', 'CARTON C', 'GUACANDA',
+    'TERCERA', 'ROZO', '2 - 10', 'MAYORISTA', 'GUABINAS', 'BOLIVAR', 'REMESAS'
+  ];
+
+  const mapaBancosFiltro: Record<string, string> = {
+    'bancolombia': 'Bancolombia',
+    'nequi': 'Nequi',
+    'daviplata': 'Daviplata',
+    'davivienda': 'Davivienda',
+    'av villas': 'AV Villas',
+    'villas': 'AV Villas',
+    'bbva': 'BBVA',
+    'banco de bogota': 'Banco de Bogotá',
+    'bogota': 'Banco de Bogotá',
+    'popular': 'Banco Popular',
+    'caja social': 'Caja Social',
+    'efectivo': 'Efectivo',
+    'transferencia': 'Transferencia'
+  };
 
   // ── 0. SALUDOS Y PRESENTACIÓN ───────────────────────────────────────────────
   const esSaludo = /^(hola|buenos\s*dias|buenas\s*tardes|buenas\s*noches|saludos|que\s*tal|buenas|hi|hello)\b/i.test(q);
@@ -880,6 +1059,263 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     };
   }
 
+  // ── 0.001 REPLICAR LIQUIDACIÓN CON LOS MISMOS DATOS A OTRO(S) TRABAJADOR(ES) ─────
+  const esPeticionMismosDatos =
+    (/\b(mismos?\s*(datos?|turnos?|dias?|valores?)|esos?\s*mismos?)\b/i.test(q)) ||
+    (/\b(lo\s*mismo\s*(a|para|con)?|igual\s*(a|para|que)?|haz\s*lo\s*mismo|ponle\s*lo\s*mismo)\b/i.test(q)) ||
+    (q.includes('mismos datos') || q.includes('mismos turnos') || q.includes('mismos dias') || q.includes('misma informacion'));
+
+  if (esPeticionMismosDatos) {
+    const { data: todosTrabajadores } = await supabase.from('trabajadores').select('*');
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*').order('creado_at', { ascending: false });
+
+    const normStr = (s: string) =>
+      (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+
+    // 1. Obtener parámetros de la última liquidación
+    let diasTurno = context?.ultimaLiquidacion?.diasTurno;
+    let horasAdicionales = context?.ultimaLiquidacion?.horasAdicionales || 0;
+    let tieneDescuentoPrestamo = context?.ultimaLiquidacion?.tieneDescuentoPrestamo || false;
+    let valorDescuentoPrestamo = context?.ultimaLiquidacion?.valorDescuentoPrestamo || 0;
+    let tieneBono = context?.ultimaLiquidacion?.tieneBono || false;
+    let valorBono = context?.ultimaLiquidacion?.valorBono || 0;
+    let nombreReferencia = context?.ultimaLiquidacion?.nombreReferencia;
+
+    // Si no está en context, buscar la liquidación más reciente en Supabase
+    if (diasTurno === undefined && historial && historial.length > 0) {
+      const ultima = historial[0];
+      diasTurno = Number(ultima.form?.diasTurno) || 16;
+      horasAdicionales = Number(ultima.form?.horasAdicionales) || 0;
+      tieneDescuentoPrestamo = Boolean((ultima.resultado?.descuentoPrestamo || 0) > 0);
+      valorDescuentoPrestamo = Number(ultima.resultado?.descuentoPrestamo) || 0;
+      tieneBono = Boolean((ultima.form?.valorBono || ultima.form?.bono || 0) > 0);
+      valorBono = Number(ultima.form?.valorBono || ultima.form?.bono) || 0;
+      nombreReferencia = ultima.persona?.nombre;
+    }
+
+    if (diasTurno === undefined) {
+      diasTurno = 16;
+    }
+
+    // 2. Extraer a los trabajadores destino
+    let textoNombres = q
+      .replace(/\b(agrega|agregale|ingresa|ingresale|mete|metele|liquida|liquidale|calcula|calculale)\s*(a)?\b/gi, ' ')
+      .replace(/\b(con|de|en|el|la|los|las|y|o|e|a|al|para|por)\b/gi, ' ')
+      .replace(/\b(mismos?\s*(datos?|turnos?|dias?|valores?)|esos?\s*mismos?)\b/gi, ' ')
+      .replace(/\b(lo\s*mismo|igual|haz\s*lo\s*mismo|ponle\s*lo\s*mismo|tambien|nomina|cuadro|tabla)\b/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+    const cargoMencionado = cargosFiltroList.find(c => q.includes(c.toLowerCase()));
+    let trabajadoresDestino: any[] = [];
+
+    if (cargoMencionado && (!textoNombres || textoNombres.length < 2)) {
+      const cedulasEnNomina = new Set((historial || []).map(h => String(h.persona?.cedula || '').trim()));
+      trabajadoresDestino = (todosTrabajadores || []).filter(t =>
+        (t.cargo || '').toLowerCase() === cargoMencionado.toLowerCase() &&
+        !cedulasEnNomina.has(String(t.cedula).trim())
+      );
+      if (trabajadoresDestino.length === 0) {
+        trabajadoresDestino = (todosTrabajadores || []).filter(t =>
+          (t.cargo || '').toLowerCase() === cargoMencionado.toLowerCase()
+        );
+      }
+    } else {
+      const partes = textoNombres.split(/[\s,]+/i).filter(p => p.length >= 2);
+      if (partes.length > 0) {
+        const agregadosIds = new Set<string>();
+        for (const p of partes) {
+          const encontrados = (todosTrabajadores || []).filter(t =>
+            normStr(t.nombre).includes(p) || String(t.cedula).includes(p)
+          );
+          for (const enc of encontrados) {
+            if (!agregadosIds.has(enc.id)) {
+              agregadosIds.add(enc.id);
+              trabajadoresDestino.push(enc);
+            }
+          }
+        }
+      }
+
+      if (trabajadoresDestino.length === 0 && context?.ultimoTrabajador) {
+        trabajadoresDestino.push(context.ultimoTrabajador);
+      }
+    }
+
+    if (trabajadoresDestino.length === 0) {
+      return {
+        text: `📋 **Agregar trabajador con los mismos datos** (${diasTurno} días${tieneDescuentoPrestamo ? ` | Aporte: ${fmt(valorDescuentoPrestamo)}` : ''}):\n\n` +
+          `¿A qué trabajador(es) deseas ingresar con estos mismos datos?\n\n` +
+          `*Indícame su(s) nombre(s), por ejemplo:*\n` +
+          `• *"A Diana"* o *"A Diana y Noé"*`,
+        nuevoContexto: {
+          ...context,
+          ultimaLiquidacion: {
+            diasTurno,
+            horasAdicionales,
+            tieneBono,
+            valorBono,
+            tieneDescuentoPrestamo,
+            valorDescuentoPrestamo,
+            nombreReferencia
+          }
+        }
+      };
+    }
+
+    const liquidacionesCalculadas = trabajadoresDestino.map(worker => {
+      const vTurno = worker.valor_turno || 35000;
+      const vHora = worker.valor_hora_adicional || Math.round(vTurno / 8);
+      const subtotalTurnos = diasTurno * vTurno;
+      const subtotalHoras = horasAdicionales * vHora;
+      const vSeguridad = diasTurno > 0 ? calcularDescuentoARLPila(diasTurno) : 0;
+      const vPrestamo = tieneDescuentoPrestamo ? valorDescuentoPrestamo : 0;
+      const vBono = tieneBono ? valorBono : 0;
+      const totalBruto = subtotalTurnos + subtotalHoras + vBono + vSeguridad;
+      const totalDescuentos = vSeguridad + vPrestamo;
+      const neto = Math.max(0, totalBruto - totalDescuentos);
+
+      const yaExiste = (historial || []).some(h => String(h.persona?.cedula || '').trim() === String(worker.cedula).trim());
+
+      const payloadDirecto = {
+        persona: {
+          nombre: worker.nombre,
+          cedula: worker.cedula,
+          cargo: worker.cargo || 'General',
+          valorTurno: vTurno,
+          valorHoraAdicional: vHora,
+          formaPago: worker.forma_pago || 'Bancaria',
+          numeroCuenta: worker.numero_cuenta || ''
+        },
+        diasTurno,
+        turnosAdicionales: 0,
+        horasAdicionales,
+        tieneBono,
+        valorBono: vBono,
+        tieneDescuentoPrestamo,
+        valorDescuentoPrestamo: vPrestamo
+      };
+
+      return {
+        worker,
+        neto,
+        yaExiste,
+        payloadDirecto
+      };
+    });
+
+    if (liquidacionesCalculadas.length === 1) {
+      const item = liquidacionesCalculadas[0];
+      const aviso = item.yaExiste
+        ? `⚠️ **Advertencia**: ${item.worker.nombre} ya tiene una liquidación registrada en esta quincena. Si confirmas, se añadirá una adicional.\n\n`
+        : '';
+
+      return {
+        text: `${aviso}📋 **Liquidación preparada con los mismos datos de ${nombreReferencia || 'la liquidación anterior'}**:\n\n` +
+          `• 👤 **Trabajador**: **${item.worker.nombre}** (C.C. \`${item.worker.cedula}\`)\n` +
+          `• 🏢 **Parqueadero**: ${item.worker.cargo || 'General'}\n` +
+          `• 📅 **Días Turno**: **${diasTurno} días** × ${fmt(item.worker.valor_turno)} = **${fmt(diasTurno * (item.worker.valor_turno || 0))}**\n` +
+          (horasAdicionales > 0 ? `• ⏱️ **Horas Extra**: ${horasAdicionales} hrs\n` : '') +
+          `• 🛡️ **ARL PILA**: ${fmt(calcularDescuentoARLPila(diasTurno))} (${diasTurno} días cotizados)\n` +
+          (tieneDescuentoPrestamo ? `• 💳 **Descuento Aportes/Préstamo**: ${fmt(valorDescuentoPrestamo)}\n` : '') +
+          (tieneBono ? `• 🎁 **Bono Adicional**: ${fmt(valorBono)}\n` : '') +
+          `• 💵 **TOTAL NETO A PAGAR**: **${fmt(item.neto)}** (⏳ Pendiente)\n` +
+          `• 🏦 **Forma de Pago**: ${item.worker.forma_pago || 'No definida'} (${item.worker.numero_cuenta ? `\`${item.worker.numero_cuenta}\`` : 'Sin cuenta'})\n\n` +
+          `*Presiona el botón a continuación o escribe "confirmo" para registrar en nómina:*`,
+        acciones: [
+          {
+            label: `⚡ Registrar a ${item.worker.nombre.split(' ')[0]} en nómina (${fmt(item.neto)})`,
+            tipo: 'LIQUIDAR_TRABAJADOR',
+            payload: item.payloadDirecto
+          },
+          {
+            label: `📍 Ubicar a ${item.worker.nombre.split(' ')[0]} en la tabla`,
+            tipo: 'DESPLAZAR_TABLA',
+            payload: {
+              cedula: item.worker.cedula,
+              nombre: item.worker.nombre
+            }
+          }
+        ],
+        nuevoContexto: {
+          ultimoTrabajador: item.worker,
+          liquidandoPendiente: undefined,
+          modificacionPendiente: {
+            tipo: 'LIQUIDAR_DIRECTA',
+            payload: item.payloadDirecto
+          },
+          ultimaLiquidacion: {
+            diasTurno,
+            horasAdicionales,
+            tieneBono,
+            valorBono,
+            tieneDescuentoPrestamo,
+            valorDescuentoPrestamo,
+            nombreReferencia: item.worker.nombre
+          }
+        }
+      };
+    }
+
+    const totalNetoTodos = liquidacionesCalculadas.reduce((acc, i) => acc + i.neto, 0);
+    const resumenItems = liquidacionesCalculadas.map((item, idx) =>
+      `${idx + 1}. 👤 **${item.worker.nombre}** (${item.worker.cargo || 'General'}):\n` +
+      `   • Tarifa: ${fmt(item.worker.valor_turno)} | **${diasTurno} turnos** → **${fmt(item.neto)}** (Neto)` +
+      (item.yaExiste ? ` ⚠️ *(Ya está en nómina)*` : '')
+    ).join('\n\n');
+
+    const accionesMultiples: ChatAction[] = [
+      {
+        label: `⚡ Registrar a todos (${liquidacionesCalculadas.length} pers. — ${fmt(totalNetoTodos)})`,
+        tipo: 'LIQUIDAR_MASIVO',
+        payload: {
+          liquidaciones: liquidacionesCalculadas.map(i => i.payloadDirecto)
+        }
+      }
+    ];
+
+    if (liquidacionesCalculadas.length <= 3) {
+      liquidacionesCalculadas.forEach(i => {
+        accionesMultiples.push({
+          label: `⚡ Solo ${i.worker.nombre.split(' ')[0]} (${fmt(i.neto)})`,
+          tipo: 'LIQUIDAR_TRABAJADOR',
+          payload: i.payloadDirecto
+        });
+      });
+    }
+
+    return {
+      text: `📋 **Liquidación Múltiple con los mismos datos de ${nombreReferencia || 'la última liquidación'}**:\n\n` +
+        `• 📅 **Días Turno**: **${diasTurno} días**` + (horasAdicionales > 0 ? ` | Horas extra: ${horasAdicionales} hrs` : '') + `\n` +
+        (tieneDescuentoPrestamo ? `• 💳 **Descuento Aporte**: ${fmt(valorDescuentoPrestamo)}\n` : '') +
+        (tieneBono ? `• 🎁 **Bono**: ${fmt(valorBono)}\n` : '') +
+        `• 👥 **Personal a ingresar**: **${liquidacionesCalculadas.length} personas**\n\n` +
+        `${resumenItems}\n\n` +
+        `💰 **Suma Total a Liquidar**: **${fmt(totalNetoTodos)}**\n\n` +
+        `*Presiona el botón para registrar a todos en lote o escribe "confirmo":*`,
+      acciones: accionesMultiples,
+      nuevoContexto: {
+        ultimoTrabajador: liquidacionesCalculadas[0].worker,
+        liquidandoPendiente: undefined,
+        modificacionPendiente: {
+          tipo: 'LIQUIDAR_MASIVO',
+          payload: {
+            liquidaciones: liquidacionesCalculadas.map(i => i.payloadDirecto)
+          }
+        },
+        ultimaLiquidacion: {
+          diasTurno,
+          horasAdicionales,
+          tieneBono,
+          valorBono,
+          tieneDescuentoPrestamo,
+          valorDescuentoPrestamo,
+          nombreReferencia: liquidacionesCalculadas[0].worker.nombre
+        }
+      }
+    };
+  }
+
   // ── 0.0 LIQUIDACIÓN Y REGISTRO EN LA NÓMINA EN VIVO ─────────────────────────
   const verbosLiquidar = /\b(liquida|liquidale|ingresa|ingresale|calcula|calculale|mete|metele|agrega|agregale)\b/i;
   const esIntentoNomina =
@@ -1019,7 +1455,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
             (bono > 0 ? `• 🎁 **Bono Adicional**: **${fmt(bono)}**\n` : '') +
             `• 💵 **TOTAL NETO A PAGAR**: **${fmt(neto)}** (⏳ Pendiente)\n` +
             `• 🏦 **Forma de Pago**: ${trabajadorEncontrado.forma_pago || 'No definida'} (${trabajadorEncontrado.numero_cuenta ? `\`${trabajadorEncontrado.numero_cuenta}\`` : '*Sin cuenta*'})\n\n` +
-            `¿Deseas registrar esta liquidación directamente en el cuadro de nómina?`,
+            `*Presiona el botón a continuación o escribe "confirmo" para registrar en nómina:*`,
           acciones: [
             {
               label: `⚡ Registrar a ${trabajadorEncontrado.nombre.split(' ')[0]} en nómina (${fmt(neto)})`,
@@ -1045,7 +1481,28 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
           ],
           nuevoContexto: {
             ultimoTrabajador: trabajadorEncontrado,
-            liquidandoPendiente: undefined
+            liquidandoPendiente: undefined,
+            modificacionPendiente: {
+              tipo: 'LIQUIDAR_DIRECTA',
+              payload: {
+                persona: pPayload,
+                diasTurno,
+                horasAdicionales,
+                tieneBono: bono > 0,
+                valorBono: bono,
+                tieneDescuentoPrestamo,
+                valorDescuentoPrestamo
+              }
+            },
+            ultimaLiquidacion: {
+              diasTurno,
+              horasAdicionales,
+              tieneBono: bono > 0,
+              valorBono: bono,
+              tieneDescuentoPrestamo,
+              valorDescuentoPrestamo,
+              nombreReferencia: trabajadorEncontrado.nombre
+            }
           }
         };
       }
@@ -1348,27 +1805,6 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
       ]
     };
   }
-
-  const cargosFiltroList = [
-    'CONTRATISTAS DE ADMINISTRACION', '5 - 6', '6 - 6', 'CARTON C', 'GUACANDA',
-    'TERCERA', 'ROZO', '2 - 10', 'MAYORISTA', 'GUABINAS', 'BOLIVAR', 'REMESAS'
-  ];
-
-  const mapaBancosFiltro: Record<string, string> = {
-    'bancolombia': 'Bancolombia',
-    'nequi': 'Nequi',
-    'daviplata': 'Daviplata',
-    'davivienda': 'Davivienda',
-    'av villas': 'AV Villas',
-    'villas': 'AV Villas',
-    'bbva': 'BBVA',
-    'banco de bogota': 'Banco de Bogotá',
-    'bogota': 'Banco de Bogotá',
-    'popular': 'Banco Popular',
-    'caja social': 'Caja Social',
-    'efectivo': 'Efectivo',
-    'transferencia': 'Transferencia'
-  };
 
   const esIntentoFiltrar =
     /\b(filtra|filtrar|filtro|muestra|mostrar|ver|solo)\b/.test(q) &&

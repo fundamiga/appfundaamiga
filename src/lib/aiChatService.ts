@@ -24,7 +24,7 @@ export interface ChatContext {
     cedula?: string;
   };
   modificacionPendiente?: {
-    tipo: 'MODIFICAR_DATO' | 'MODIFICAR_TURNOS';
+    tipo: 'MODIFICAR_DATO' | 'MODIFICAR_TURNOS' | 'PAGO_MASIVO';
     payload: any;
   };
 }
@@ -561,6 +561,15 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         };
       } else if (context.modificacionPendiente.tipo === 'MODIFICAR_TURNOS') {
         const res = await executeModificarTurnosLiquidacion(context.modificacionPendiente.payload);
+        return {
+          text: res.message,
+          nuevoContexto: {
+            ultimoTrabajador: context.ultimoTrabajador,
+            modificacionPendiente: undefined
+          }
+        };
+      } else if (context.modificacionPendiente.tipo === 'PAGO_MASIVO') {
+        const res = await executePagoMasivo(context.modificacionPendiente.payload);
         return {
           text: res.message,
           nuevoContexto: {
@@ -1165,11 +1174,20 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     }
   }
 
-  // ── 0.05 AUDITORÍA Y DETECCIÓN DE ANOMALÍAS ─────────────────────────────────
+  // ── 0.05 AUDITORÍA Y DETECCIÓN DE ANOMALÍAS / TRABAJADORES REPETIDOS ────────
+  const esConsultaRepetidos =
+    /\b(repetid[oas]+|duplicad[oas]+)\b/i.test(q) ||
+    q.includes('trabajador repetido') || q.includes('trabajadores repetidos') ||
+    q.includes('alguien repetido') || q.includes('hay repetidos') ||
+    q.includes('hay repetido') || q.includes('quienes estan repetidos') ||
+    q.includes('quien esta repetido') || q.includes('cuentas repetidas') ||
+    q.includes('algun repetido') || q.includes('algun trabajador repetido');
+
   const esAuditoria =
     q.includes('auditoria') || q.includes('auditar') ||
     q.includes('revisa la nomina') || q.includes('revisar nomina') || q.includes('revisa el cuadro') || q.includes('revisar el cuadro') ||
-    q.includes('hay errores') || q.includes('detectar errores') || q.includes('anomalias') || q.includes('inconsistencias');
+    q.includes('hay errores') || q.includes('detectar errores') || q.includes('anomalias') || q.includes('inconsistencias') ||
+    esConsultaRepetidos;
 
   if (esAuditoria) {
     const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
@@ -1191,6 +1209,56 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     });
 
     const duplicados = Array.from(conteoCedulas.entries()).filter(([_, lista]) => lista.length > 1);
+
+    // Respuesta directa si la pregunta fue específicamente sobre repetidos o duplicados
+    if (esConsultaRepetidos) {
+      if (duplicados.length > 0) {
+        let dTxt = `🚨 **Trabajadores Repetidos detectados en el cuadro de nómina (${duplicados.length})**:\n\n`;
+        const accionesRepetidos: ChatAction[] = [];
+        duplicados.forEach(([ced, lista]) => {
+          dTxt += `• 👤 **${lista[0].persona?.nombre}** (C.C. \`${ced}\`) aparece **${lista.length} veces** en el cuadro:\n`;
+          lista.forEach((item, idx) => {
+            const turnos = item.form?.diasTurno || 0;
+            const neto = item.resultado?.neto || 0;
+            const estado = item.estado || 'Pendiente';
+            dTxt += `   - Registro ${idx + 1}: ${turnos} turnos → **${fmt(neto)}** (${estado === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente'})\n`;
+          });
+          dTxt += `\n`;
+          accionesRepetidos.push({
+            label: `🗑️ Eliminar duplicado de ${lista[0].persona?.nombre.split(' ')[0]}`,
+            tipo: 'CONSULTAR_DETALLE',
+            payload: `Elimina a ${lista[0].persona?.nombre} de la tabla`
+          });
+          accionesRepetidos.push({
+            label: `📍 Ubicar a ${lista[0].persona?.nombre.split(' ')[0]} en la tabla`,
+            tipo: 'DESPLAZAR_TABLA',
+            payload: { cedula: ced, nombre: lista[0].persona?.nombre }
+          });
+        });
+        dTxt += `💡 *Puedes pedirme "Elimina a [Nombre] de la tabla" para remover el duplicado que no corresponda.*`;
+        return {
+          text: dTxt.trim(),
+          acciones: accionesRepetidos.slice(0, 6)
+        };
+      } else {
+        return {
+          text: `✅ **No hay trabajadores repetidos en el cuadro de nómina.**\n\nTodos los registros de la quincena tienen cédulas únicas sin duplicados.`,
+          acciones: [
+            {
+              label: `🛡️ Auditoría completa de nómina`,
+              tipo: 'CONSULTAR_DETALLE',
+              payload: 'Auditar nómina'
+            },
+            {
+              label: `📊 Ver informe de nómina`,
+              tipo: 'CONSULTAR_DETALLE',
+              payload: 'Dame un informe de cómo va la nómina'
+            }
+          ]
+        };
+      }
+    }
+
     if (duplicados.length > 0) {
       let dTxt = `🚨 **Duplicados detectados en el cuadro (${duplicados.length})**:\n`;
       duplicados.forEach(([ced, lista]) => {
@@ -1351,8 +1419,13 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
 
   // ── 0.07 PAGOS MASIVOS Y ESTADÍSTICAS POR SEGMENTO ─────────────────────────
   const esMarcaPagadoMasivo =
-    /\b(marca|marcar|pasa|pasar|cambia|cambiar|pon|poner)\s*(?:a\s*)?(?:todos\s*)?(?:como\s*)?pagados?\b/i.test(q) ||
-    /\b(pagar\s*a\s*todos)\b/i.test(q);
+    /\b(marca|marcar|marque|marques|pasa|pasar|pase|cambia|cambiar|cambie|pon|poner|ponga|paga|pagar|pague)\s*(?:a\s*)?(?:todos?|todas?)?\s*(?:como\s*)?pagados?\b/i.test(q) ||
+    /\b(pagar?\s*(?:a\s*)?(?:todos?|todas?|todo))\b/i.test(q) ||
+    /\b(marca|marcar|marque|pon|poner|pasa|pasar)\s*(?:todo|todos|todas)\s*(?:como\s*)?pagad[os]+\b/i.test(q) ||
+    q.includes('marca todo como pagado') || q.includes('marcar todo como pagado') ||
+    q.includes('marca todos como pagados') || q.includes('marcar todos como pagados') ||
+    q.includes('marca todo pagado') || q.includes('marcar todo pagado') ||
+    q.includes('pagar todo') || q.includes('pagar todos');
 
   if (esMarcaPagadoMasivo) {
     const cargoFiltro = cargosFiltroList.find(c => q.includes(c.toLowerCase()));
@@ -1392,14 +1465,22 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
       text: `💳 **Confirmación de Pago Masivo**:\n\n` +
         `• 👥 Trabajadores a marcar como Pagados: **${pendientesFiltrados.length} personas** (${criterio})\n` +
         `• 💰 Total Neto a liquidar: **${fmt(totalNeto)}**\n\n` +
-        `⚠️ ¿Deseas aplicar el cambio de estado a **✅ Pagado** en Supabase para estas ${pendientesFiltrados.length} personas?`,
+        `⚠️ ¿Deseas aplicar el cambio de estado a **✅ Pagado** en Supabase para estas ${pendientesFiltrados.length} personas?\n\n` +
+        `*Presiona el botón a continuación o escribe "confirmo" para aplicar el cambio:*`,
       acciones: [
         {
           label: `⚡ Confirmar pago masivo (${pendientesFiltrados.length} pers. — ${fmt(totalNeto)})`,
           tipo: 'PAGO_MASIVO',
           payload: { tipoFiltro, valorFiltro }
         }
-      ]
+      ],
+      nuevoContexto: {
+        ultimoTrabajador: context?.ultimoTrabajador,
+        modificacionPendiente: {
+          tipo: 'PAGO_MASIVO',
+          payload: { tipoFiltro, valorFiltro }
+        }
+      }
     };
   }
 
@@ -2269,29 +2350,33 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
   const tienePalabraEstar = /\b(van|estan|llevo|llevamos|meti|metidos|ingrese|ingresados|liquide|liquidados|tengo|hay)\b/.test(q);
   const tienePalabraFaltar = /\b(falta|faltan|faltante|faltantes)\b/.test(q);
 
-  // 2.1 ¿Ya metí a X? / ¿Está X en la nómina?
+  // 2.1 ¿Ya metí a X? / ¿Está X en la nómina? / ¿Está X?
   const esPreguntaYaIngresado =
     /\b(ya\s*(meti|ingrese|liquide|agregue|esta|aparece))\b/.test(q) ||
-    /\b(esta\s*en\s*la\s*(nomina|tabla|cuadro|lista))\b/.test(q) ||
-    /\b(aparece\s*en\s*la\s*(nomina|tabla|cuadro|lista))\b/.test(q) ||
-    (q.includes('esta en la nomina') || q.includes('esta en el cuadro') || q.includes('esta en la tabla'));
+    /\b(esta|estan|aparece|aparecen|se\s*encuentra|se\s*encuentran)\s+(?:en\s*la\s*(?:nomina|tabla|cuadro|lista)\s+)?([a-z0-9\s]+)/.test(q) ||
+    ((q.includes('esta en la nomina') || q.includes('esta en el cuadro') || q.includes('esta en la tabla')) &&
+    !q.includes('como va') && !q.includes('como estan'));
 
   if (esPreguntaYaIngresado) {
     const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
     const { data: trabajadores } = await supabase.from('trabajadores').select('*');
 
+    const normStr = (s: string) =>
+      (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+
     const palabrasIgnoradas = new Set([
       'ya', 'meti', 'metido', 'ingrese', 'ingresado', 'ingresada', 'liquide', 'liquidado',
-      'agregue', 'agregado', 'esta', 'en', 'la', 'el', 'nomina', 'cuadro', 'lista', 'de',
-      'a', 'al', 'o', 'y', 'por', 'favor', 'dime', 'si', 'aparece', 'persona', 'tabla'
+      'agregue', 'agregado', 'esta', 'estan', 'se', 'encuentra', 'encuentran', 'en', 'la', 'el',
+      'nomina', 'cuadro', 'lista', 'de', 'a', 'al', 'o', 'y', 'por', 'favor', 'dime', 'si',
+      'aparece', 'aparecen', 'persona', 'personas', 'tabla'
     ]);
 
-    const tokens = q.split(/\s+/).filter(t => t.length >= 3 && !palabrasIgnoradas.has(t));
+    const tokens = q.split(/\s+/).filter(t => t.length >= 2 && !palabrasIgnoradas.has(t));
 
     if (tokens.length > 0) {
       const enNomina = (historial || []).find(h => {
-        const nom = (h.persona?.nombre || '').toLowerCase();
-        const ced = (h.persona?.cedula || '').toLowerCase();
+        const nom = normStr(h.persona?.nombre || '');
+        const ced = String(h.persona?.cedula || '').trim();
         return tokens.some(tk => nom.includes(tk) || ced.includes(tk));
       });
 
@@ -2310,11 +2395,19 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
             (horas > 0 ? `• ⏱️ **Horas adicionales**: ${horas} hrs\n` : '') +
             `• 💵 **Neto a pagar**: **${fmt(neto)}**\n` +
             `• 📌 **Estado**: ${estadoIcon}\n` +
-            `• 💳 **Forma de pago**: ${enNomina.persona?.formaPago || 'No definida'} (${enNomina.persona?.numeroCuenta || 'Sin cuenta'})`,
+            `• 💳 **Forma de pago**: ${enNomina.persona?.formaPago || 'No definida'} (${enNomina.persona?.numeroCuenta ? `\`${enNomina.persona?.numeroCuenta}\`` : 'Sin cuenta'})`,
           acciones: [
             {
               label: `📍 Ubicar a ${enNomina.persona?.nombre.split(' ')[0]} en la tabla`,
               tipo: 'DESPLAZAR_TABLA',
+              payload: {
+                cedula: enNomina.persona?.cedula,
+                nombre: enNomina.persona?.nombre
+              }
+            },
+            {
+              label: `✏️ Modificar a ${enNomina.persona?.nombre.split(' ')[0]} en la tabla`,
+              tipo: 'EDITAR_EN_TABLA',
               payload: {
                 cedula: enNomina.persona?.cedula,
                 nombre: enNomina.persona?.nombre
@@ -2337,27 +2430,67 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
       }
 
       const enTrabajadores = (trabajadores || []).find(t => {
-        const nom = (t.nombre || '').toLowerCase();
-        const ced = (t.cedula || '').toLowerCase();
+        const nom = normStr(t.nombre || '');
+        const ced = String(t.cedula || '').trim();
         return tokens.some(tk => nom.includes(tk) || ced.includes(tk));
       });
 
       if (enTrabajadores) {
         return {
-          text: `❌ **No, ${enTrabajadores.nombre} (C.C. \`${enTrabajadores.cedula}\`) aún NO ha sido ingresado en la nómina.**\n\n` +
+          text: `👤 **${enTrabajadores.nombre}** (C.C. \`${enTrabajadores.cedula}\`):\n\n` +
             `• 🏢 **Parqueadero / Cargo**: ${enTrabajadores.cargo || 'No asignado'}\n` +
-            `• 💰 **Valor de Turno registrado**: ${fmt(enTrabajadores.valor_turno || 0)}\n` +
-            `• 💳 **Forma de Pago**: ${enTrabajadores.forma_pago || 'No definida'}\n\n` +
-            `💡 *Puedes liquidarlo seleccionándolo en el formulario de la pantalla.*`,
+            `• 📊 **Estado en Nómina**: ❌ **No lo has agregado aún a la nómina de esta quincena.**\n` +
+            `• 💰 **Valor de Turno**: ${fmt(enTrabajadores.valor_turno || 0)} | **Hora Extra**: ${fmt(enTrabajadores.valor_hora_adicional || 0)}\n` +
+            `• 💳 **Forma de Pago**: ${enTrabajadores.forma_pago || 'No definida'} (${enTrabajadores.numero_cuenta ? `\`${enTrabajadores.numero_cuenta}\`` : 'Sin cuenta'})\n\n` +
+            `👉 **¿Deseas agregarlo(a) a la nómina de esta quincena?**\n` +
+            `*Escribe por ejemplo: "Liquida a ${enTrabajadores.nombre.split(' ')[0]} con 15 turnos" o pulsa el botón a continuación:*`,
+          acciones: [
+            {
+              label: `⚡ Agregar a ${enTrabajadores.nombre.split(' ')[0]} a la nómina`,
+              tipo: 'CONSULTAR_DETALLE',
+              payload: `Liquida a ${enTrabajadores.nombre}`
+            },
+            {
+              label: `📍 Ubicar a ${enTrabajadores.nombre.split(' ')[0]} en el sistema`,
+              tipo: 'DESPLAZAR_TABLA',
+              payload: {
+                cedula: enTrabajadores.cedula,
+                nombre: enTrabajadores.nombre
+              }
+            }
+          ],
           nuevoContexto: {
             ultimoTrabajador: enTrabajadores,
-            campoPendiente: undefined
+            campoPendiente: undefined,
+            liquidandoPendiente: {
+              trabajador: enTrabajadores
+            }
           }
         };
       }
 
       return {
-        text: `🔍 No encontré a nadie con los términos *" ${tokens.join(' ')}"* ni en la nómina activa ni en la lista de trabajadores de Fundamiga.`
+        text: `🔎 **No se encuentra registrado ningún trabajador con el término "${tokens.join(' ')}".**\n\n` +
+          `• ⚠️ No aparece en la base de datos de trabajadores ni en el cuadro de nómina actual.\n\n` +
+          `👉 **¿Deseas agregarlo(a) como nuevo trabajador en el sistema?**\n` +
+          `*Escribe por ejemplo: "Crea al trabajador ${tokens.join(' ')}, parqueadero [Sede]" o pulsa el botón a continuación:*`,
+        acciones: [
+          {
+            label: `➕ Registrar nuevo trabajador`,
+            tipo: 'NAVEGAR_RUTA',
+            payload: '/admin'
+          },
+          {
+            label: `📋 Ver todos los trabajadores`,
+            tipo: 'CONSULTAR_DETALLE',
+            payload: 'Dame los nombres de los trabajadores'
+          },
+          {
+            label: `📊 Ver resumen de nómina`,
+            tipo: 'CONSULTAR_DETALLE',
+            payload: 'Dame un resumen de la nómina'
+          }
+        ]
       };
     }
   }
@@ -2852,88 +2985,86 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     .filter(palabra => palabra.length >= 2 && !palabrasIgnoradas.has(palabra));
 
   if (tokens.length > 0) {
-    let queryAnd = supabase.from('trabajadores').select('*');
-    for (const t of tokens) {
-      queryAnd = queryAnd.ilike('nombre', `%${t}%`);
-    }
-    const { data: resAnd } = await queryAnd.limit(5);
-    let resultados = resAnd || [];
+    const { data: todosTrabajadores } = await supabase.from('trabajadores').select('*');
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
 
-    // Fallback: si no encontró todos los tokens juntos (ej: orden inverso o segundo nombre no registrado), buscar por token individual
-    if (resultados.length === 0 && tokens.length > 1) {
-      for (const t of tokens) {
-        const { data: resToken } = await supabase
-          .from('trabajadores')
-          .select('*')
-          .ilike('nombre', `%${t}%`)
-          .limit(5);
-        if (resToken && resToken.length > 0) {
-          resultados = resToken;
-          break;
+    const normStr = (s: string) =>
+      (s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+
+    const scoredTrabajadores = (todosTrabajadores || []).map(t => {
+      const nom = normStr(t.nombre || '');
+      const ced = String(t.cedula || '').trim();
+      const cargo = normStr(t.cargo || '');
+
+      let score = 0;
+      if (tokens.every(tk => nom.includes(tk))) {
+        score = 100 + tokens.length * 10;
+      } else {
+        const matchingTokens = tokens.filter(tk => nom.includes(tk)).length;
+        if (matchingTokens > 0) {
+          score = 30 * matchingTokens;
         }
       }
-    }
 
-    // Fallback: buscar directamente en el historial de nómina
+      if (tokens.some(tk => ced.includes(tk))) {
+        score = Math.max(score, 120);
+      }
+
+      if (tokens.some(tk => cargo.includes(tk))) {
+        score = Math.max(score, 20);
+      }
+
+      return { t, score };
+    }).filter(item => item.score > 0).sort((a, b) => b.score - a.score);
+
+    let resultados = scoredTrabajadores.map(item => item.t).slice(0, 5);
+
+    // Fallback: si no está en trabajadores, buscar en historial
     if (resultados.length === 0) {
-      const { data: hist } = await supabase.from('historial_liquidaciones').select('*');
-      const histMatches = (hist || []).filter(h => {
-        const nom = (h.persona?.nombre || '').toLowerCase();
-        return tokens.some(tk => nom.includes(tk));
-      });
-      if (histMatches.length > 0) {
-        resultados = histMatches.slice(0, 5).map(h => ({
-          id: h.id,
-          nombre: h.persona?.nombre || '',
-          cedula: h.persona?.cedula || '',
-          cargo: h.persona?.cargo || '',
-          valor_turno: h.persona?.valorTurno || 0,
-          valor_hora_adicional: h.persona?.valorHoraAdicional || 0,
-          forma_pago: h.persona?.formaPago || '',
-          numero_cuenta: h.persona?.numeroCuenta || ''
+      const scoredHist = (historial || []).map(h => {
+        const nom = normStr(h.persona?.nombre || '');
+        const ced = String(h.persona?.cedula || '').trim();
+        let score = 0;
+        if (tokens.every(tk => nom.includes(tk))) score = 100;
+        else if (tokens.some(tk => nom.includes(tk))) score = 30;
+        if (tokens.some(tk => ced.includes(tk))) score = Math.max(score, 120);
+        return { h, score };
+      }).filter(item => item.score > 0).sort((a, b) => b.score - a.score);
+
+      if (scoredHist.length > 0) {
+        resultados = scoredHist.slice(0, 5).map(item => ({
+          id: item.h.id,
+          nombre: item.h.persona?.nombre || '',
+          cedula: item.h.persona?.cedula || '',
+          cargo: item.h.persona?.cargo || '',
+          valor_turno: item.h.persona?.valorTurno || 0,
+          valor_hora_adicional: item.h.persona?.valorHoraAdicional || 0,
+          forma_pago: item.h.persona?.formaPago || '',
+          numero_cuenta: item.h.persona?.numeroCuenta || ''
         }));
       }
     }
 
-    // Búsqueda por cédula si son dígitos
-    if (resultados.length === 0 && /^\d+$/.test(tokens.join(''))) {
-      const { data: resCedula } = await supabase
-        .from('trabajadores')
-        .select('*')
-        .ilike('cedula', `%${tokens.join('')}%`)
-        .limit(5);
-      resultados = resCedula || [];
-    }
-
-    // Búsqueda por cargo / parqueadero
-    if (resultados.length === 0) {
-      const term = tokens.join(' ');
-      const { data: resCargo } = await supabase
-        .from('trabajadores')
-        .select('*')
-        .ilike('cargo', `%${term}%`)
-        .limit(8);
-      resultados = resCargo || [];
-    }
-
     if (resultados.length > 0) {
-      const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
-
       let respuesta = `🔎 **Información encontrada (${resultados.length})**:\n\n`;
       const accionesList: ChatAction[] = [];
+      let primerNoEnNomina: any = null;
 
       for (const t of resultados) {
         // Verificar si ya está ingresado en el cuadro de nómina actual
         const enNomina = (historial || []).find(h => String(h.persona?.cedula || '').trim() === String(t.cedula).trim());
 
-        respuesta += `👤 **${t.nombre}** (C.C. \`${t.cedula}\`)\n`;
-        respuesta += `   • **Parqueadero / Cargo**: ${t.cargo || 'No asignado'}\n`;
-
         if (enNomina) {
           const turnos = enNomina.form?.diasTurno || 0;
           const neto = enNomina.resultado?.neto || 0;
           const estadoIcon = enNomina.estado === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente';
+
+          respuesta += `👤 **${t.nombre}** (C.C. \`${t.cedula}\`) — ✅ **Sí, ya está en la nómina activa**:\n`;
+          respuesta += `   • **Parqueadero / Cargo**: ${t.cargo || 'No asignado'}\n`;
           respuesta += `   • 📊 **Estado en Nómina**: **${turnos} turnos** → **${fmt(neto)}** (${estadoIcon})\n`;
+          respuesta += `   • **Valor Turno**: ${fmt(t.valor_turno || 0)} | **Hora Extra**: ${fmt(t.valor_hora_adicional || 0)}\n`;
+          respuesta += `   • **Forma de Pago**: ${t.forma_pago || 'No definida'}\n`;
+          respuesta += `   • **No. Cuenta**: ${t.numero_cuenta ? `\`${t.numero_cuenta}\`` : '⚠️ Sin cuenta registrada'}\n\n`;
 
           accionesList.push({
             label: `📍 Ubicar a ${t.nombre.split(' ')[0]} en la tabla`,
@@ -2943,8 +3074,29 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
               nombre: t.nombre
             }
           });
+          accionesList.push({
+            label: `✏️ Modificar a ${t.nombre.split(' ')[0]} en la tabla`,
+            tipo: 'EDITAR_EN_TABLA',
+            payload: {
+              cedula: t.cedula,
+              nombre: t.nombre
+            }
+          });
         } else {
-          respuesta += `   • 📊 **Estado en Nómina**: ❌ *Aún no ingresado en el cuadro actual*\n`;
+          if (!primerNoEnNomina) primerNoEnNomina = t;
+
+          respuesta += `👤 **${t.nombre}** (C.C. \`${t.cedula}\`):\n`;
+          respuesta += `   • **Parqueadero / Cargo**: ${t.cargo || 'No asignado'}\n`;
+          respuesta += `   • 📊 **Estado en Nómina**: ❌ **No lo has agregado aún a la nómina de esta quincena.**\n`;
+          respuesta += `   • **Valor Turno**: ${fmt(t.valor_turno || 0)} | **Hora Extra**: ${fmt(t.valor_hora_adicional || 0)}\n`;
+          respuesta += `   • **Forma de Pago**: ${t.forma_pago || 'No definida'}\n`;
+          respuesta += `   • **No. Cuenta**: ${t.numero_cuenta ? `\`${t.numero_cuenta}\`` : '⚠️ Sin cuenta registrada'}\n\n`;
+
+          accionesList.push({
+            label: `⚡ Agregar a ${t.nombre.split(' ')[0]} a la nómina`,
+            tipo: 'CONSULTAR_DETALLE',
+            payload: `Liquida a ${t.nombre}`
+          });
           accionesList.push({
             label: `📍 Ubicar a ${t.nombre.split(' ')[0]} en el sistema`,
             tipo: 'DESPLAZAR_TABLA',
@@ -2955,10 +3107,6 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
           });
         }
 
-        respuesta += `   • **Valor Turno**: ${fmt(t.valor_turno || 0)} | **Hora Extra**: ${fmt(t.valor_hora_adicional || 0)}\n`;
-        respuesta += `   • **Forma de Pago**: ${t.forma_pago || 'No definida'}\n`;
-        respuesta += `   • **No. Cuenta**: ${t.numero_cuenta ? `\`${t.numero_cuenta}\`` : '⚠️ Sin cuenta registrada'}\n\n`;
-
         if (t.numero_cuenta) {
           accionesList.push({
             label: `📋 Copiar Cuenta de ${t.nombre.split(' ')[0]}`,
@@ -2968,12 +3116,18 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         }
       }
 
+      if (primerNoEnNomina) {
+        respuesta += `👉 **¿Deseas agregar a ${primerNoEnNomina.nombre.split(' ')[0]} a la nómina?**\n` +
+          `*Escribe por ejemplo: "Liquida a ${primerNoEnNomina.nombre.split(' ')[0]} con 15 turnos" o presiona el botón abajo.*`;
+      }
+
       return {
         text: respuesta.trim(),
-        acciones: accionesList,
+        acciones: accionesList.slice(0, 6),
         nuevoContexto: {
           ultimoTrabajador: resultados[0],
-          campoPendiente: undefined
+          campoPendiente: undefined,
+          liquidandoPendiente: primerNoEnNomina ? { trabajador: primerNoEnNomina } : undefined
         }
       };
     }
@@ -2981,11 +3135,26 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
 
   // ── 7. RESPUESTA POR DEFECTO ───────────────────────────────────────────────
   return {
-    text: `🤖 No encontré resultados para "${query}".\n\n` +
-      `Prueba buscando por:\n` +
-      `• **Nombre o apellido** (ej: *Carlos*, *Diana Arias*)\n` +
-      `• **Cédula** (ej: *1005*)\n` +
-      `• **Parqueadero** (ej: *Carton C*, *Guacanda*, *Mayorista*)\n` +
-      `• **Consultas**: *"resumen nomina"*, *"tabla ARL"*, *"personal de remesas"*`
+    text: `🔎 **No se encuentra registrado ningún trabajador con el término "${query}".**\n\n` +
+      `• ⚠️ No aparece registrado en la base de datos de trabajadores ni en el cuadro de nómina actual.\n\n` +
+      `👉 **¿Deseas registrar a un nuevo trabajador en el sistema?**\n` +
+      `*Escribe por ejemplo: "Crea al trabajador [Nombre], cédula [123], parqueadero [Sede]" o presiona el botón a continuación:*`,
+    acciones: [
+      {
+        label: `➕ Registrar nuevo trabajador`,
+        tipo: 'NAVEGAR_RUTA',
+        payload: '/admin'
+      },
+      {
+        label: `📋 Ver todos los trabajadores`,
+        tipo: 'CONSULTAR_DETALLE',
+        payload: 'Dame los nombres de los trabajadores'
+      },
+      {
+        label: `📊 Ver resumen de nómina`,
+        tipo: 'CONSULTAR_DETALLE',
+        payload: 'Dame un resumen de la nómina'
+      }
+    ]
   };
 }

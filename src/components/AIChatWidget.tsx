@@ -2,7 +2,7 @@
 
 import React, { useState, useRef, useEffect } from 'react';
 import { Sparkles, X, Send, Bot, User, ChevronDown, Check, Copy, Calculator, Shield, Users, HelpCircle, RefreshCw, Zap, MapPin, Pencil, Trash2 } from 'lucide-react';
-import { processAIChatMessage, ChatMessage, ChatAction, executeUpdateTrabajador, executeLiquidacionDirecta, executePagoMasivo, executeCrearTrabajador, executeEliminarDeNomina, ChatContext } from '@/lib/aiChatService';
+import { processAIChatMessage, ChatMessage, ChatAction, executeUpdateTrabajador, executeLiquidacionDirecta, executePagoMasivo, executeCrearTrabajador, executeEliminarDeNomina, executeModificarTurnosLiquidacion, ChatContext } from '@/lib/aiChatService';
 
 export default function AIChatWidget() {
   const [isOpen, setIsOpen] = useState(false);
@@ -338,6 +338,40 @@ export default function AIChatWidget() {
       return;
     }
 
+    if (action.tipo === 'MODIFICAR_TURNOS' && action.payload) {
+      const actionKey = `mod-turnos-${actIdx}-${action.payload.historialId}`;
+      if (accionesEjecutadas.includes(actionKey) || ejecutandoAccionId === actionKey) return;
+
+      setEjecutandoAccionId(actionKey);
+      try {
+        const res = await executeModificarTurnosLiquidacion(action.payload);
+        setAccionesEjecutadas(prev => [...prev, actionKey]);
+
+        const confirmationMsg: ChatMessage = {
+          id: (Date.now() + 2).toString(),
+          sender: 'assistant',
+          text: res.message,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, confirmationMsg]);
+
+        if (res.success && typeof window !== 'undefined') {
+          window.dispatchEvent(new CustomEvent('fundamiga:recargar-datos'));
+        }
+      } catch (err: any) {
+        const errorMsg: ChatMessage = {
+          id: (Date.now() + 2).toString(),
+          sender: 'assistant',
+          text: `❌ Error al actualizar turnos: ${err?.message || 'Error inesperado'}`,
+          timestamp: new Date()
+        };
+        setMessages(prev => [...prev, errorMsg]);
+      } finally {
+        setEjecutandoAccionId(null);
+      }
+      return;
+    }
+
     if (action.tipo === 'MODIFICAR_DATO' && action.payload) {
       const actionKey = `${actIdx}-${action.payload.trabajadorId}-${action.payload.campo}`;
       if (accionesEjecutadas.includes(actionKey) || ejecutandoAccionId === actionKey) return;
@@ -582,6 +616,41 @@ export default function AIChatWidget() {
                               ) : (
                                 <>
                                   <Trash2 size={14} /> {act.label}
+                                </>
+                              )}
+                            </button>
+                          );
+                        }
+
+                        if (act.tipo === 'MODIFICAR_TURNOS' && act.payload) {
+                          const actionKey = `mod-turnos-${aIdx}-${act.payload?.historialId}`;
+                          const isModifying = ejecutandoAccionId === actionKey;
+                          const isModified = accionesEjecutadas.includes(actionKey);
+
+                          return (
+                            <button
+                              key={aIdx}
+                              onClick={() => handleExecuteAction(act, aIdx)}
+                              disabled={isModifying || isModified}
+                              className={`w-full py-2 px-3 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-xs ${
+                                isModified
+                                  ? 'bg-emerald-600 text-white cursor-default'
+                                  : isModifying
+                                  ? 'bg-amber-100 text-amber-900 cursor-wait'
+                                  : 'bg-gradient-to-r from-amber-500 to-amber-600 hover:from-amber-600 hover:to-amber-700 text-white active:scale-98 shadow-sm cursor-pointer'
+                              }`}
+                            >
+                              {isModified ? (
+                                <>
+                                  <Check size={14} /> ¡Turnos actualizados!
+                                </>
+                              ) : isModifying ? (
+                                <>
+                                  <RefreshCw size={14} className="animate-spin" /> Guardando en nómina...
+                                </>
+                              ) : (
+                                <>
+                                  <Zap size={14} className="fill-white" /> {act.label}
                                 </>
                               )}
                             </button>

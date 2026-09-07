@@ -4,7 +4,7 @@ import { calcularDescuentoARLPila } from '@/utils/calcularDescuentoARL';
 
 export interface ChatAction {
   label: string;
-  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO' | 'DESPLAZAR_TABLA' | 'EDITAR_EN_TABLA' | 'LIQUIDAR_TRABAJADOR' | 'PAGO_MASIVO' | 'APLICAR_FILTROS' | 'CREAR_TRABAJADOR' | 'ELIMINAR_DE_NOMINA' | 'NAVEGAR_RUTA';
+  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO' | 'DESPLAZAR_TABLA' | 'EDITAR_EN_TABLA' | 'LIQUIDAR_TRABAJADOR' | 'PAGO_MASIVO' | 'APLICAR_FILTROS' | 'CREAR_TRABAJADOR' | 'ELIMINAR_DE_NOMINA' | 'MODIFICAR_TURNOS' | 'NAVEGAR_RUTA';
   payload?: any;
 }
 
@@ -390,6 +390,94 @@ export async function executeEliminarDeNomina(payload: {
       success: false,
       message: `❌ Error inesperado al eliminar: ${err?.message || 'Error de conexión'}`
     };
+  }
+}
+
+export async function executeModificarTurnosLiquidacion(payload: {
+  historialId: string;
+  nombre: string;
+  cedula?: string;
+  nuevosDias: number;
+}): Promise<{ success: boolean; message: string; nuevoNeto?: number }> {
+  try {
+    const { data: row, error: fetchErr } = await supabase
+      .from('historial_liquidaciones')
+      .select('*')
+      .eq('id', payload.historialId)
+      .single();
+
+    if (fetchErr || !row) {
+      return { success: false, message: `❌ No se encontró la liquidación en Supabase: ${fetchErr?.message || ''}` };
+    }
+
+    const p = row.persona || {};
+    const f = row.form || {};
+    const valorTurno = Number(p.valorTurno) || 0;
+    const valorHora = Number(p.valorHoraAdicional) || 0;
+    const nuevosDias = Number(payload.nuevosDias) || 0;
+    const horasAdicionales = Number(f.horasAdicionales) || 0;
+    const bono = Number(f.bono) || 0;
+    const valorDescuentoPrestamo = Number(f.valorDescuentoPrestamo) || 0;
+    const tieneDescuentoPrestamo = valorDescuentoPrestamo > 0;
+
+    const tieneDescuentoSeguridad = nuevosDias > 0 && !row.sinARL;
+    const valorDescuentoSeguridad = tieneDescuentoSeguridad ? calcularDescuentoARLPila(nuevosDias) : 0;
+
+    const subtotalTurnos = nuevosDias * valorTurno;
+    const subtotalHoras = horasAdicionales * valorHora;
+    const totalDevengado = subtotalTurnos + subtotalHoras + bono + (tieneDescuentoSeguridad ? valorDescuentoSeguridad : 0);
+    const totalDeducciones = (tieneDescuentoSeguridad ? valorDescuentoSeguridad : 0) + (tieneDescuentoPrestamo ? valorDescuentoPrestamo : 0);
+    const neto = totalDevengado - totalDeducciones;
+
+    const updatedForm = {
+      ...f,
+      diasTurno: nuevosDias,
+      turnos: nuevosDias
+    };
+
+    const updatedResultado = {
+      ...row.resultado,
+      subtotalTurnos,
+      totalDevengado,
+      totalDeducciones,
+      descuentoSeguridad: valorDescuentoSeguridad,
+      neto,
+      detalle: {
+        ...(row.resultado?.detalle || {}),
+        turnos: `${nuevosDias} días × ${fmt(valorTurno)} = ${fmt(subtotalTurnos)}`
+      }
+    };
+
+    const { error: updateErr } = await supabase
+      .from('historial_liquidaciones')
+      .update({
+        form: updatedForm,
+        resultado: updatedResultado
+      })
+      .eq('id', payload.historialId);
+
+    if (updateErr) {
+      return { success: false, message: `❌ Error al actualizar turnos en Supabase: ${updateErr.message}` };
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('fundamiga:recargar-datos'));
+      window.dispatchEvent(new CustomEvent('fundamiga:desplazar-a-trabajador', {
+        detail: { cedula: payload.cedula, nombre: payload.nombre }
+      }));
+    }
+
+    return {
+      success: true,
+      message: `✅ **¡Turnos actualizados exitosamente en la nómina!**\n\n` +
+        `• 👤 **Trabajador**: **${payload.nombre}**\n` +
+        `• 📅 **Días actualizados**: **${nuevosDias} turnos** (${fmt(valorTurno)} c/u)\n` +
+        `• 💰 **Nuevo Neto a Pagar**: **${fmt(neto)}**\n` +
+        `• 🔄 *El cuadro de nómina y los totales se han sincronizado en vivo.*`,
+      nuevoNeto: neto
+    };
+  } catch (err: any) {
+    return { success: false, message: `❌ Error inesperado: ${err?.message || 'Error de conexión'}` };
   }
 }
 
@@ -1515,6 +1603,92 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     };
   }
 
+  // ── 0.095 CONSULTA DE TRABAJADORES POR DÍAS DE TURNO ────────────────────────
+  const esIntentoModificarTurnosDirecto =
+    /\b(cambia|cambiar|actualiza|actualizar|modifica|modificar|pon|ponle|ajusta)\b/i.test(q) &&
+    /\b(dias?|turnos?)\b/i.test(q) &&
+    (/\ba\s*([0-9]{1,2})\b/.test(q) || /\bpor\s*([0-9]{1,2})\b/.test(q) || /\b([0-9]{1,2})\s*(dias?|turnos?)\b/.test(q));
+
+  const tienePalabraConsultaTurnos = !esIntentoModificarTurnosDirecto &&
+    (
+      (/\b(cuales|quienes|lista|dime|mostrar|ver|cuantos|hay|trabajadores|personas)\b/i.test(q) &&
+       /\b(dias?|turnos?)\b/i.test(q) &&
+       /\b([0-9]{1,2})\b/.test(q)) ||
+      /\b(tienen|con)\s*([0-9]{1,2})\s*(dias?|turnos?)\b/i.test(q) ||
+      /\b(de\s*([0-9]{1,2})\s*(dias?|turnos?))\b/i.test(q)
+    );
+
+  if (tienePalabraConsultaTurnos) {
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+
+    if (!historial || historial.length === 0) {
+      return { text: `El cuadro de nómina está vacío actualmente.` };
+    }
+
+    const diasMatches = [...q.matchAll(/\b([0-9]{1,2})\b/g)]
+      .map(m => parseInt(m[1], 10))
+      .filter(n => n >= 1 && n <= 31);
+    let diasConsultados = Array.from(new Set(diasMatches));
+
+    if (diasConsultados.length === 0) {
+      diasConsultados = [16];
+    }
+
+    const filtrados = historial.filter(h => {
+      const turnos = Number(h.form?.diasTurno || h.form?.turnos || 0);
+      return diasConsultados.includes(turnos);
+    });
+
+    if (filtrados.length === 0) {
+      const turnosExistentes = Array.from(new Set(historial.map(h => Number(h.form?.diasTurno || h.form?.turnos || 0))))
+        .filter(t => t > 0)
+        .sort((a, b) => a - b);
+
+      return {
+        text: `🤖 En este momento no hay trabajadores liquidados con **${diasConsultados.join(' o ')} días** en el cuadro de nómina.\n\n` +
+          `• Días de turno registrados actualmente en el cuadro: **${turnosExistentes.map(t => `${t} días`).join(', ') || 'Ninguno'}**.`
+      };
+    }
+
+    const lineas = filtrados.map((h, idx) => {
+      const p = h.persona || {};
+      const turnos = Number(h.form?.diasTurno || h.form?.turnos || 0);
+      const horas = Number(h.form?.horasAdicionales || 0);
+      const neto = Number(h.resultado?.neto || 0);
+      const estado = h.estado === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente';
+
+      return `${idx + 1}. 👤 **${p.nombre}** (C.C. \`${p.cedula || 'S/C'}\`)\n` +
+        `   • 🏢 Parqueadero: ${p.cargo || 'General'} | 💳 ${p.formaPago || 'Efectivo'}\n` +
+        `   • 📊 **${turnos} días**${horas > 0 ? ` + ${horas} hrs extra` : ''} → **${fmt(neto)}** (${estado})`;
+    });
+
+    const acciones: ChatAction[] = [];
+
+    const primeros = filtrados.slice(0, 3);
+    for (const item of primeros) {
+      const nomCorto = (item.persona?.nombre || 'Trabajador').split(' ')[0];
+      acciones.push({
+        label: `✏️ Modificar a ${nomCorto} en tabla`,
+        tipo: 'EDITAR_EN_TABLA',
+        payload: { cedula: item.persona?.cedula, nombre: item.persona?.nombre }
+      });
+      acciones.push({
+        label: `📍 Ubicar a ${nomCorto} en tabla`,
+        tipo: 'DESPLAZAR_TABLA',
+        payload: { cedula: item.persona?.cedula, nombre: item.persona?.nombre }
+      });
+    }
+
+    return {
+      text: `📅 **Personal con ${diasConsultados.map(d => `${d} días`).join(' o ')} en nómina** (${filtrados.length} personas):\n\n` +
+        lineas.join('\n\n') + `\n\n` +
+        `💡 **Para modificar los días de alguno:**\n` +
+        `• Pídeme directamente por aquí: *"Cámbiale los días a [Nombre] a 15"* o *"Ponle 14 turnos a [Nombre]"*.\n` +
+        `• O presiona el botón **✏️ Modificar en tabla** para abrir su fila directamente.`,
+      acciones
+    };
+  }
+
   // ── 0.1 MODIFICACIÓN DE DATOS (SOLO A PETICIÓN EXPLÍCITA) ───────────────────
   // Solo responder con mensaje de ayuda si NO se menciona a ninguna persona ni se especifica una acción concreta
   const esPreguntaInformativaModificar =
@@ -1667,6 +1841,19 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         }
       }
 
+      // G. Días de turno en nómina (ej: "cambiale los dias a 15", "ponle 14 turnos", "a 16 dias", "modifica sus dias a 14")
+      if (!campoDB && (q.includes('dia') || q.includes('dias') || q.includes('turno') || q.includes('turnos'))) {
+        const matchDias = q.match(/(?:a|por|ponle|con|de|=|:)\s*([0-9]{1,2})\s*(?:dias?|turnos?)?/i) || q.match(/\b([0-9]{1,2})\s*(?:dias|turnos)\b/i);
+        if (matchDias) {
+          const valNum = parseInt(matchDias[1], 10);
+          if (valNum >= 1 && valNum <= 31) {
+            campoDB = 'dias_turno_nomina';
+            campoLabel = 'Días de Turno en Nómina';
+            valorNuevo = valNum;
+          }
+        }
+      }
+
       // 2. Identificar al trabajador
       let trabajadorEncontrado: any = null;
 
@@ -1789,6 +1976,74 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
 
         // B.1 Se especificó campo y nuevo valor
         if (campoDB && valorNuevo !== null) {
+          if (campoDB === 'dias_turno_nomina') {
+            if (!enNomina) {
+              return {
+                text: `ℹ️ **${trabajadorEncontrado.nombre}** no se encuentra actualmente en el cuadro de nómina activa.\n\n` +
+                  `• Si deseas ingresarlo con **${valorNuevo} turnos**, puedes pedirme:\n` +
+                  `  *"Liquida a ${trabajadorEncontrado.nombre.split(' ')[0]} con ${valorNuevo} turnos"*`
+              };
+            }
+
+            const diasActuales = Number(enNomina.form?.diasTurno || enNomina.form?.turnos || 0);
+            if (diasActuales === valorNuevo) {
+              return {
+                text: `ℹ️ **${trabajadorEncontrado.nombre}** ya tiene asignados exactamente **${valorNuevo} turnos** en el cuadro de nómina. No es necesario realizar cambios.`,
+                acciones: [
+                  {
+                    label: `📍 Ubicar a ${trabajadorEncontrado.nombre.split(' ')[0]} en la tabla`,
+                    tipo: 'DESPLAZAR_TABLA',
+                    payload: { cedula: trabajadorEncontrado.cedula, nombre: trabajadorEncontrado.nombre }
+                  }
+                ]
+              };
+            }
+
+            const valorTurno = Number(enNomina.persona?.valorTurno) || 0;
+            const subtotalTurnos = valorNuevo * valorTurno;
+            const horasAdic = Number(enNomina.form?.horasAdicionales || 0) * (Number(enNomina.persona?.valorHoraAdicional) || 0);
+            const bono = Number(enNomina.form?.bono || 0);
+            const arl = !enNomina.sinARL && valorNuevo > 0 ? calcularDescuentoARLPila(valorNuevo) : 0;
+            const prestamo = Number(enNomina.form?.valorDescuentoPrestamo || 0);
+            const nuevoNeto = (subtotalTurnos + horasAdic + bono + arl) - (arl + prestamo);
+
+            return {
+              text: `📍 *Te he ubicado en la fila de ${trabajadorEncontrado.nombre} en la tabla.*\n\n` +
+                `📝 **Solicitud de Modificación de Días de Turno**:\n\n` +
+                `• 👤 **Trabajador**: **${trabajadorEncontrado.nombre}** (C.C. \`${trabajadorEncontrado.cedula}\`)\n` +
+                `• 🏢 **Parqueadero**: ${trabajadorEncontrado.cargo || 'General'}\n` +
+                `• ⚠️ **Días actuales**: ${diasActuales} turnos (Neto: ${fmt(enNomina.resultado?.neto || 0)})\n` +
+                `• ✨ **Nuevos días solicitados**: **${valorNuevo} turnos** (Nuevo Neto estimado: **${fmt(nuevoNeto)}**)\n\n` +
+                `*Presiona el botón a continuación para aplicar el cambio y sincronizar el cuadro:*`,
+              acciones: [
+                {
+                  label: `⚡ Confirmar cambio a ${valorNuevo} turnos (${fmt(nuevoNeto)})`,
+                  tipo: 'MODIFICAR_TURNOS',
+                  payload: {
+                    historialId: enNomina.id,
+                    nombre: trabajadorEncontrado.nombre,
+                    cedula: trabajadorEncontrado.cedula,
+                    nuevosDias: valorNuevo
+                  }
+                },
+                {
+                  label: `✏️ Abrir editor en tabla`,
+                  tipo: 'EDITAR_EN_TABLA',
+                  payload: { cedula: trabajadorEncontrado.cedula, nombre: trabajadorEncontrado.nombre }
+                },
+                {
+                  label: `📍 Ubicar en tabla`,
+                  tipo: 'DESPLAZAR_TABLA',
+                  payload: { cedula: trabajadorEncontrado.cedula, nombre: trabajadorEncontrado.nombre }
+                }
+              ],
+              nuevoContexto: {
+                ultimoTrabajador: trabajadorEncontrado,
+                campoPendiente: undefined
+              }
+            };
+          }
+
           if (trabajadorEncontrado[campoDB] === valorNuevo) {
             const valorActualFmt = typeof valorNuevo === 'number' ? fmt(valorNuevo) : `\`${valorNuevo}\``;
             return {

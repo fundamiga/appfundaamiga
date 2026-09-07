@@ -35,6 +35,7 @@ export interface ChatContext {
     valorBono?: number;
     tieneDescuentoPrestamo?: boolean;
     valorDescuentoPrestamo?: number;
+    sinARL?: boolean;
     nombreReferencia?: string;
   };
 }
@@ -167,6 +168,9 @@ export async function executeLiquidacionDirecta(payload: {
   descripcionBono?: string;
   tieneDescuentoPrestamo?: boolean;
   valorDescuentoPrestamo?: number;
+  tieneDescuentoSeguridad?: boolean;
+  valorDescuentoSeguridad?: number;
+  sinARL?: boolean;
 }): Promise<{ success: boolean; message: string; id?: string }> {
   try {
     const p = payload.persona;
@@ -178,8 +182,11 @@ export async function executeLiquidacionDirecta(payload: {
     const tieneDescuentoPrestamo = Boolean(payload.tieneDescuentoPrestamo);
     const valorDescuentoPrestamo = Number(payload.valorDescuentoPrestamo) || 0;
 
-    const valorDescuentoSeguridad = calcularDescuentoARLPila(diasTurno);
-    const tieneDescuentoSeguridad = diasTurno > 0;
+    const sinARL = Boolean(payload.sinARL) || payload.tieneDescuentoSeguridad === false;
+    const tieneDescuentoSeguridad = !sinARL && diasTurno > 0;
+    const valorDescuentoSeguridad = tieneDescuentoSeguridad
+      ? (payload.valorDescuentoSeguridad !== undefined ? Number(payload.valorDescuentoSeguridad) : calcularDescuentoARLPila(diasTurno))
+      : 0;
 
     const subtotalTurnos = diasTurno * (p.valorTurno || 0);
     const subtotalTurnosAdicionales = turnosAdicionales * (p.valorTurno || 0);
@@ -287,6 +294,9 @@ export async function executeLiquidacionMasiva(payload: {
     valorBono?: number;
     tieneDescuentoPrestamo?: boolean;
     valorDescuentoPrestamo?: number;
+    tieneDescuentoSeguridad?: boolean;
+    valorDescuentoSeguridad?: number;
+    sinARL?: boolean;
   }>;
 }): Promise<{ success: boolean; message: string; registradas: number }> {
   try {
@@ -308,12 +318,17 @@ export async function executeLiquidacionMasiva(payload: {
       const tieneDescuentoPrestamo = Boolean(item.tieneDescuentoPrestamo);
       const valorDescuentoPrestamo = Number(item.valorDescuentoPrestamo) || 0;
 
-      const valorDescuentoSeguridad = calcularDescuentoARLPila(diasTurno);
+      const sinARL = Boolean(item.sinARL) || item.tieneDescuentoSeguridad === false;
+      const tieneDescuentoSeguridad = !sinARL && diasTurno > 0;
+      const valorDescuentoSeguridad = tieneDescuentoSeguridad
+        ? (item.valorDescuentoSeguridad !== undefined ? Number(item.valorDescuentoSeguridad) : calcularDescuentoARLPila(diasTurno))
+        : 0;
+
       const subtotalTurnos = diasTurno * (p.valorTurno || 0);
       const subtotalTurnosAdicionales = turnosAdicionales * (p.valorTurno || 0);
       const subtotalHoras = horasAdicionales * (p.valorHoraAdicional || 0);
       const bono = tieneBono ? valorBono : 0;
-      const descuentoSeguridad = diasTurno > 0 ? valorDescuentoSeguridad : 0;
+      const descuentoSeguridad = tieneDescuentoSeguridad ? valorDescuentoSeguridad : 0;
       const descuentoPrestamo = tieneDescuentoPrestamo ? valorDescuentoPrestamo : 0;
 
       const totalBruto = subtotalTurnos + subtotalTurnosAdicionales + subtotalHoras + bono + descuentoSeguridad;
@@ -680,6 +695,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     .replace(/\b(tabal|tbala|tavla)\b/g, 'tabla')
     .replace(/\b(cuadroo|cudaros?|cuadroa)\b/g, 'cuadro')
     .replace(/\b(cuant[ao]ss?|cuantoa|cuntos|cuatas)\b/g, 'cuantos')
+    .replace(/\b(mimso|mimsos|mismoo|misos|miso|mismas|misma)\b/g, (m) => m.endsWith('s') ? 'mismos' : 'mismo')
     .replace(/\b5\s*-\s*6\b/g, '5 - 6')
     .replace(/\b6\s*-\s*6\b/g, '6 - 6')
     .replace(/\b2\s*-\s*10\b/g, '2 - 10');
@@ -1086,6 +1102,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     let tieneBono = context?.ultimaLiquidacion?.tieneBono || false;
     let valorBono = context?.ultimaLiquidacion?.valorBono || 0;
     let nombreReferencia = context?.ultimaLiquidacion?.nombreReferencia;
+    let sinARL = context?.ultimaLiquidacion?.sinARL || false;
 
     // Si se especificó un trabajador origen, buscar sus datos en el historial de nómina
     if (trabajadorOrigenNombre) {
@@ -1102,6 +1119,8 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         tieneBono = Boolean((origenHistorial.form?.valorBono || origenHistorial.form?.bono || 0) > 0);
         valorBono = Number(origenHistorial.form?.valorBono || origenHistorial.form?.bono) || 0;
         nombreReferencia = origenHistorial.persona?.nombre;
+        sinARL = origenHistorial.form?.tieneDescuentoSeguridad === false ||
+                 (origenHistorial.resultado?.descuentoSeguridad !== undefined && Number(origenHistorial.resultado?.descuentoSeguridad) === 0);
       } else {
         const origenTrab = (todosTrabajadores || []).find(t =>
           normStr(t.nombre).includes(normStr(trabajadorOrigenNombre)) ||
@@ -1120,6 +1139,8 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
       tieneBono = Boolean((ultima.form?.valorBono || ultima.form?.bono || 0) > 0);
       valorBono = Number(ultima.form?.valorBono || ultima.form?.bono) || 0;
       nombreReferencia = ultima.persona?.nombre;
+      sinARL = ultima.form?.tieneDescuentoSeguridad === false ||
+               (ultima.resultado?.descuentoSeguridad !== undefined && Number(ultima.resultado?.descuentoSeguridad) === 0);
     }
 
     if (diasTurno === undefined) {
@@ -1215,6 +1236,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
             valorBono,
             tieneDescuentoPrestamo,
             valorDescuentoPrestamo,
+            sinARL,
             nombreReferencia
           }
         }
@@ -1226,7 +1248,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
       const vHora = worker.valor_hora_adicional || Math.round(vTurno / 8);
       const subtotalTurnos = diasTurno * vTurno;
       const subtotalHoras = horasAdicionales * vHora;
-      const vSeguridad = diasTurno > 0 ? calcularDescuentoARLPila(diasTurno) : 0;
+      const vSeguridad = (!sinARL && diasTurno > 0) ? calcularDescuentoARLPila(diasTurno) : 0;
       const vPrestamo = tieneDescuentoPrestamo ? valorDescuentoPrestamo : 0;
       const vBono = tieneBono ? valorBono : 0;
       const totalBruto = subtotalTurnos + subtotalHoras + vBono + vSeguridad;
@@ -1251,7 +1273,10 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         tieneBono,
         valorBono: vBono,
         tieneDescuentoPrestamo,
-        valorDescuentoPrestamo: vPrestamo
+        valorDescuentoPrestamo: vPrestamo,
+        sinARL,
+        tieneDescuentoSeguridad: !sinARL && diasTurno > 0,
+        valorDescuentoSeguridad: vSeguridad
       };
 
       return {
@@ -1274,7 +1299,10 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
           `• 🏢 **Parqueadero**: ${item.worker.cargo || 'General'}\n` +
           `• 📅 **Días Turno**: **${diasTurno} días** × ${fmt(item.worker.valor_turno)} = **${fmt(diasTurno * (item.worker.valor_turno || 0))}**\n` +
           (horasAdicionales > 0 ? `• ⏱️ **Horas Extra**: ${horasAdicionales} hrs\n` : '') +
-          `• 🛡️ **ARL PILA**: ${fmt(calcularDescuentoARLPila(diasTurno))} (${diasTurno} días cotizados)\n` +
+          (sinARL
+            ? `• 🛡️ **ARL PILA**: Sin descuento (Replicado de ${nombreReferencia || 'origen'})\n`
+            : `• 🛡️ **ARL PILA**: ${fmt(calcularDescuentoARLPila(diasTurno))} (${diasTurno} días cotizados)\n`
+          ) +
           (tieneDescuentoPrestamo ? `• 💳 **Descuento Aportes/Préstamo**: ${fmt(valorDescuentoPrestamo)}\n` : '') +
           (tieneBono ? `• 🎁 **Bono Adicional**: ${fmt(valorBono)}\n` : '') +
           `• 💵 **TOTAL NETO A PAGAR**: **${fmt(item.neto)}** (⏳ Pendiente)\n` +
@@ -1309,6 +1337,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
             valorBono,
             tieneDescuentoPrestamo,
             valorDescuentoPrestamo,
+            sinARL,
             nombreReferencia: item.worker.nombre
           }
         }
@@ -1368,6 +1397,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
           valorBono,
           tieneDescuentoPrestamo,
           valorDescuentoPrestamo,
+          sinARL,
           nombreReferencia: liquidacionesCalculadas[0].worker.nombre
         }
       }

@@ -4,7 +4,7 @@ import { calcularDescuentoARLPila } from '@/utils/calcularDescuentoARL';
 
 export interface ChatAction {
   label: string;
-  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO' | 'DESPLAZAR_TABLA' | 'EDITAR_EN_TABLA' | 'LIQUIDAR_TRABAJADOR' | 'LIQUIDAR_MASIVO' | 'PAGO_MASIVO' | 'APLICAR_FILTROS' | 'CREAR_TRABAJADOR' | 'ELIMINAR_DE_NOMINA' | 'MODIFICAR_TURNOS' | 'NAVEGAR_RUTA';
+  tipo: 'COPIAR' | 'CONSULTAR_DETALLE' | 'CALCULAR_TURNO' | 'MODIFICAR_DATO' | 'DESPLAZAR_TABLA' | 'EDITAR_EN_TABLA' | 'LIQUIDAR_TRABAJADOR' | 'LIQUIDAR_MASIVO' | 'PAGO_MASIVO' | 'APLICAR_FILTROS' | 'CREAR_TRABAJADOR' | 'ELIMINAR_DE_NOMINA' | 'MODIFICAR_TURNOS' | 'CAMBIAR_ESTADO_INDIVIDUAL' | 'NAVEGAR_RUTA';
   payload?: any;
 }
 
@@ -29,7 +29,7 @@ export interface ChatContext {
     cedula?: string;
   };
   modificacionPendiente?: {
-    tipo: 'MODIFICAR_DATO' | 'MODIFICAR_TURNOS' | 'PAGO_MASIVO' | 'LIQUIDAR_DIRECTA' | 'LIQUIDAR_MASIVO';
+    tipo: 'MODIFICAR_DATO' | 'MODIFICAR_TURNOS' | 'PAGO_MASIVO' | 'LIQUIDAR_DIRECTA' | 'LIQUIDAR_MASIVO' | 'CAMBIAR_ESTADO_INDIVIDUAL';
     payload: any;
   };
   ajusteNominaPendiente?: {
@@ -830,6 +830,42 @@ export async function executeModificarTurnosLiquidacion(payload: {
   }
 }
 
+export async function executeCambiarEstadoIndividual(payload: {
+  historialId: string;
+  nombre: string;
+  cedula?: string;
+  nuevoEstado: 'Pagado' | 'Pendiente';
+}): Promise<{ success: boolean; message: string }> {
+  try {
+    const { error } = await supabase
+      .from('historial_liquidaciones')
+      .update({ estado: payload.nuevoEstado })
+      .eq('id', payload.historialId);
+
+    if (error) {
+      return { success: false, message: `❌ Error al actualizar estado en Supabase: ${error.message}` };
+    }
+
+    if (typeof window !== 'undefined') {
+      window.dispatchEvent(new CustomEvent('fundamiga:recargar-datos'));
+      window.dispatchEvent(new CustomEvent('fundamiga:desplazar-a-trabajador', {
+        detail: { cedula: payload.cedula, nombre: payload.nombre }
+      }));
+    }
+
+    const icono = payload.nuevoEstado === 'Pagado' ? '✅' : '⏳';
+    return {
+      success: true,
+      message: `${icono} **¡Estado de pago actualizado con éxito!**\n\n` +
+        `• 👤 **Trabajador**: **${payload.nombre}**\n` +
+        `• 📊 **Nuevo Estado**: **${payload.nuevoEstado === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente'}**\n` +
+        `• 🔄 *El cuadro de nómina y los totales se han sincronizado en tiempo real.*`
+    };
+  } catch (err: any) {
+    return { success: false, message: `❌ Error inesperado: ${err?.message || 'Error de conexión'}` };
+  }
+}
+
 export async function processAIChatMessage(message: string, context?: ChatContext): Promise<ChatResponse> {
   const cleanMsg = message.trim();
   if (!cleanMsg) return { text: 'Por favor escribe una consulta válida.' };
@@ -946,6 +982,15 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         };
       } else if (context.modificacionPendiente.tipo === 'LIQUIDAR_MASIVO') {
         const res = await executeLiquidacionMasiva(context.modificacionPendiente.payload);
+        return {
+          text: res.message,
+          nuevoContexto: {
+            ultimoTrabajador: context.ultimoTrabajador,
+            modificacionPendiente: undefined
+          }
+        };
+      } else if (context.modificacionPendiente.tipo === 'CAMBIAR_ESTADO_INDIVIDUAL') {
+        const res = await executeCambiarEstadoIndividual(context.modificacionPendiente.payload);
         return {
           text: res.message,
           nuevoContexto: {
@@ -2216,10 +2261,289 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     }
   }
 
+  // ── 0.0035 CAMBIO DE ESTADO DE PAGO INDIVIDUAL (PAGADO / PENDIENTE) ─────────
+  const esIntentoMarcarPagado =
+    (/\b(marca|marcar|marcale|pon|poner|ponle|pasa|pasar|pasale|cambia|cambiar|cambiale)\b.*?\b(pagad[oas]+|pago)\b/i.test(q) ||
+     /\b(ya\s*(?:le\s*)?pague|ya\s*esta\s*pagad[oa])\b/i.test(q) ||
+     q.includes('marcar como pagado') || q.includes('marca como pagado') || q.includes('poner como pagado')) &&
+    !q.includes('todos') && !q.includes('bancolombia') && !q.includes('davivienda') && !q.includes('nequi') && !q.includes('daviplata');
+
+  const esIntentoMarcarPendiente =
+    (/\b(marca|marcar|marcale|pon|poner|ponle|pasa|pasar|pasale|cambia|cambiar|cambiale)\b.*?\b(pendientes?)\b/i.test(q) ||
+     q.includes('marcar como pendiente') || q.includes('marca como pendiente') || q.includes('poner como pendiente') || q.includes('dejar pendiente')) &&
+    !q.includes('todos') && !q.includes('bancolombia') && !q.includes('davivienda') && !q.includes('nequi') && !q.includes('daviplata');
+
+  const esCambioEstadoIndividual = esIntentoMarcarPagado || esIntentoMarcarPendiente;
+
+  if (esCambioEstadoIndividual) {
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+    if (historial && historial.length > 0) {
+      const enNomina = historial.find(h => {
+        const nom = (h.persona?.nombre || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+        const ced = String(h.persona?.cedula || '').trim();
+        return (ced && q.includes(ced)) || (nom && q.includes(nom)) ||
+          nom.split(/\s+/).some((p: string) => p.length >= 4 && q.includes(p));
+      }) || (context?.ultimoTrabajador ? historial.find(h => String(h.persona?.cedula || '').trim() === String(context.ultimoTrabajador.cedula || '').trim()) : null);
+
+      if (enNomina) {
+        const p = enNomina.persona || {};
+        const nomCorto = p.nombre.split(' ')[0];
+        const nuevoEstado: 'Pagado' | 'Pendiente' = esIntentoMarcarPagado ? 'Pagado' : 'Pendiente';
+        const estadoActual = enNomina.estado || 'Pendiente';
+
+        if (estadoActual === nuevoEstado) {
+          return {
+            text: `ℹ️ **${p.nombre}** ya se encuentra registrado con el estado **${nuevoEstado === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente'}** en el cuadro de nómina.\n\n` +
+              `• 💰 Valor Neto: **${fmt(enNomina.resultado?.neto || 0)}**\n` +
+              `• 🏢 Parqueadero: ${p.cargo || 'General'} | 💳 ${p.formaPago || 'Efectivo'}`,
+            acciones: [
+              { label: `📍 Ubicar a ${nomCorto} en tabla`, tipo: 'DESPLAZAR_TABLA', payload: { cedula: p.cedula, nombre: p.nombre } }
+            ]
+          };
+        }
+
+        const icono = nuevoEstado === 'Pagado' ? '✅' : '⏳';
+        return {
+          text: `${icono} **Solicitud de Cambio de Estado para ${p.nombre}:**\n\n` +
+            `• 👤 **Trabajador**: **${p.nombre}** (C.C. \`${p.cedula || 'S/C'}\`)\n` +
+            `• 🏢 **Parqueadero**: ${p.cargo || 'General'}\n` +
+            `• 💰 **Valor Neto**: **${fmt(enNomina.resultado?.neto || 0)}**\n` +
+            `• ⚠️ **Estado Actual**: ${estadoActual === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente'}\n` +
+            `• ✨ **Nuevo Estado**: **${nuevoEstado === 'Pagado' ? '✅ Pagado' : '⏳ Pendiente'}**\n\n` +
+            `*¿Confirmas cambiar el estado a ${nuevoEstado}? Presiona el botón o escribe "confirmo":*`,
+          acciones: [
+            {
+              label: `⚡ Marcar a ${nomCorto} como ${nuevoEstado}`,
+              tipo: 'CAMBIAR_ESTADO_INDIVIDUAL',
+              payload: {
+                historialId: enNomina.id,
+                nombre: p.nombre,
+                cedula: p.cedula,
+                nuevoEstado
+              }
+            },
+            {
+              label: `📍 Ubicar en tabla`,
+              tipo: 'DESPLAZAR_TABLA',
+              payload: { cedula: p.cedula, nombre: p.nombre }
+            }
+          ],
+          nuevoContexto: {
+            ultimoTrabajador: p,
+            modificacionPendiente: {
+              tipo: 'CAMBIAR_ESTADO_INDIVIDUAL',
+              payload: {
+                historialId: enNomina.id,
+                nombre: p.nombre,
+                cedula: p.cedula,
+                nuevoEstado
+              }
+            }
+          }
+        };
+      }
+    }
+  }
+
+  // ── 0.0038 INTELIGENCIA ANALÍTICA DE NEGOCIO (BI, RANKINGS Y COMPARATIVAS) ──
+  const esRankingSalario =
+    /\b(quien|quienes)\s*(?:es\s*el\s*que\s*)?(?:mas\s*gana|gana\s*mas|tiene\s*el\s*neto\s*mas\s*alto|sueldo\s*mas\s*alto|cobra\s*mas)\b/i.test(q) ||
+    q.includes('mas ganan') || q.includes('mejor pagado') || q.includes('quien gana mas');
+
+  const esRankingMenorSalario =
+    /\b(quien|quienes)\s*(?:es\s*el\s*que\s*)?(?:menos\s*gana|gana\s*menos|tiene\s*el\s*neto\s*mas\s*bajo|sueldo\s*mas\s*bajo|cobra\s*menos)\b/i.test(q);
+
+  const esConsultaHorasExtra =
+    /\b(quien|quienes)\s*(?:tienen?|hicieron?|lleva|registran?)\s*(?:horas?\s*extras?|horas?\s*adicionales?|extras?)\b/i.test(q) ||
+    (q.includes('horas extra') && (q.includes('quienes') || q.includes('quien') || q.includes('lista') || q.includes('cuales') || q.includes('cuantos')));
+
+  const esConsultaPrestamos =
+    /\b(quien|quienes)\s*(?:tienen?|registran?|pagan?)\s*(?:prestamos?|aportes?)\b/i.test(q) ||
+    (q.includes('prestamo') && (q.includes('quienes') || q.includes('quien') || q.includes('lista') || q.includes('cuales')));
+
+  const esConsultaBonos =
+    /\b(quien|quienes)\s*(?:tienen?|reciben?)\s*bonos?\b/i.test(q) ||
+    (q.includes('bono') && (q.includes('quienes') || q.includes('quien') || q.includes('lista') || q.includes('cuales')));
+
+  const esParqueaderoCostoso =
+    q.includes('parqueadero mas costoso') || q.includes('parqueadero que mas gasta') ||
+    q.includes('sede que mas gasta') || q.includes('sede mas costosa') ||
+    q.includes('gastos por parqueadero') || q.includes('costos por sede');
+
+  const esPromediosNomina =
+    (q.includes('promedio') || q.includes('media de pago')) && (q.includes('nomina') || q.includes('turnos') || q.includes('pago') || q.includes('sueldo'));
+
+  const esComparativa =
+    (/\b(compara|comparar|comparame)\b/i.test(q) && (q.includes('con') || q.includes(' y '))) ||
+    (/\bpor\s*que\b/i.test(q) && /\bgana\s*mas\s*que\b/i.test(q));
+
+  if (esRankingSalario || esRankingMenorSalario || esConsultaHorasExtra || esConsultaPrestamos || esConsultaBonos || esParqueaderoCostoso || esPromediosNomina || esComparativa) {
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+
+    if (!historial || historial.length === 0) {
+      return { text: `📋 El cuadro de nómina está vacío actualmente. No hay datos para generar análisis.` };
+    }
+
+    // 1. COMPARATIVA ENTRE DOS TRABAJADORES
+    if (esComparativa) {
+      const nombresEncontrados = historial.filter(h => {
+        const nom = (h.persona?.nombre || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+        const partes = nom.split(/\s+/).filter((p: string) => p.length >= 3);
+        return partes.some((p: string) => q.includes(p));
+      });
+
+      if (nombresEncontrados.length >= 2) {
+        const a = nombresEncontrados[0];
+        const b = nombresEncontrados[1];
+
+        const netoA = a.resultado?.neto || 0;
+        const netoB = b.resultado?.neto || 0;
+        const diff = Math.abs(netoA - netoB);
+        const mayor = netoA >= netoB ? a : b;
+        const menor = netoA < netoB ? a : b;
+
+        return {
+          text: `⚖️ **Comparativa Cara a Cara de Liquidación:**\n\n` +
+            `👤 **${a.persona?.nombre}** (${a.persona?.cargo || 'General'}):\n` +
+            `• Días: **${a.form?.diasTurno || 0} turnos** × ${fmt(a.persona?.valorTurno || 0)} = **${fmt(a.resultado?.subtotalTurnos || 0)}**\n` +
+            `• Horas Extras: **${a.form?.horasAdicionales || 0} hrs** (${fmt(a.resultado?.subtotalHoras || 0)})\n` +
+            `• Bono: **+${fmt(a.form?.bono || 0)}** | Préstamo: **-${fmt(a.form?.valorDescuentoPrestamo || 0)}**\n` +
+            `• Descuento ARL: **-${fmt(a.resultado?.descuentoSeguridad || 0)}**\n` +
+            `• 💵 **NETO A PAGAR: ${fmt(netoA)}**\n\n` +
+            `────────────────────────────\n` +
+            `👤 **${b.persona?.nombre}** (${b.persona?.cargo || 'General'}):\n` +
+            `• Días: **${b.form?.diasTurno || 0} turnos** × ${fmt(b.persona?.valorTurno || 0)} = **${fmt(b.resultado?.subtotalTurnos || 0)}**\n` +
+            `• Horas Extras: **${b.form?.horasAdicionales || 0} hrs** (${fmt(b.resultado?.subtotalHoras || 0)})\n` +
+            `• Bono: **+${fmt(b.form?.bono || 0)}** | Préstamo: **-${fmt(b.form?.valorDescuentoPrestamo || 0)}**\n` +
+            `• Descuento ARL: **-${fmt(b.resultado?.descuentoSeguridad || 0)}**\n` +
+            `• 💵 **NETO A PAGAR: ${fmt(netoB)}**\n\n` +
+            `📊 **Análisis de la Diferencia (${fmt(diff)})**:\n` +
+            `**${mayor.persona?.nombre.split(' ')[0]}** gana **${fmt(diff)} más** que **${menor.persona?.nombre.split(' ')[0]}** debido a la diferencia en turnos laborados y tarifas base.`
+        };
+      }
+    }
+
+    // 2. QUIÉNES TIENEN HORAS EXTRA
+    if (esConsultaHorasExtra) {
+      const conHoras = historial.filter(h => (h.form?.horasAdicionales || 0) > 0);
+      if (conHoras.length === 0) {
+        return { text: `⏱️ **Ningún trabajador tiene horas extras registradas** en esta nómina activa.` };
+      }
+      const totalHrs = conHoras.reduce((acc, h) => acc + (h.form?.horasAdicionales || 0), 0);
+      const totalValorHrs = conHoras.reduce((acc, h) => acc + (h.resultado?.subtotalHoras || 0), 0);
+
+      let txt = `⏱️ **Personal con Horas Extras (${conHoras.length} personas — ${totalHrs} horas totales | ${fmt(totalValorHrs)})**:\n\n`;
+      conHoras.forEach((h, idx) => {
+        txt += `${idx + 1}. 👤 **${h.persona?.nombre}** (${h.persona?.cargo || 'General'}):\n` +
+          `   • **${h.form?.horasAdicionales} hrs extra** (${fmt(h.persona?.valorHoraAdicional || 0)}/hr) → **+${fmt(h.resultado?.subtotalHoras || 0)}**\n`;
+      });
+      return { text: txt.trim() };
+    }
+
+    // 3. QUIÉNES TIENEN PRÉSTAMOS / APORTES
+    if (esConsultaPrestamos) {
+      const conPrestamos = historial.filter(h => (h.form?.valorDescuentoPrestamo || 0) > 0);
+      if (conPrestamos.length === 0) {
+        return { text: `💳 **Ningún trabajador tiene descuentos por préstamo o aporte** en esta nómina activa.` };
+      }
+      const totalPrestamos = conPrestamos.reduce((acc, h) => acc + (h.form?.valorDescuentoPrestamo || 0), 0);
+
+      let txt = `💳 **Personal con Descuento de Préstamo / Aportes (${conPrestamos.length} personas — Total: ${fmt(totalPrestamos)})**:\n\n`;
+      conPrestamos.forEach((h, idx) => {
+        txt += `${idx + 1}. 👤 **${h.persona?.nombre}**: Descuento de **-${fmt(h.form?.valorDescuentoPrestamo || 0)}** (Neto: ${fmt(h.resultado?.neto || 0)})\n`;
+      });
+      return { text: txt.trim() };
+    }
+
+    // 4. QUIÉNES TIENEN BONOS
+    if (esConsultaBonos) {
+      const conBonos = historial.filter(h => (h.form?.bono || h.form?.valorBono || 0) > 0);
+      if (conBonos.length === 0) {
+        return { text: `🎁 **Ningún trabajador tiene bonificaciones registradas** en esta nómina activa.` };
+      }
+      const totalBonos = conBonos.reduce((acc, h) => acc + (h.form?.bono || h.form?.valorBono || 0), 0);
+
+      let txt = `🎁 **Personal con Bonificación Asignada (${conBonos.length} personas — Total: ${fmt(totalBonos)})**:\n\n`;
+      conBonos.forEach((h, idx) => {
+        txt += `${idx + 1}. 👤 **${h.persona?.nombre}**: Bono de **+${fmt(h.form?.bono || h.form?.valorBono || 0)}**\n`;
+      });
+      return { text: txt.trim() };
+    }
+
+    // 5. PARQUEADERO MÁS COSTOSO / GASTOS POR SEDE
+    if (esParqueaderoCostoso) {
+      const sedesMap = new Map<string, { totalNeto: number; count: number; turnos: number }>();
+      let granTotal = 0;
+      historial.forEach(h => {
+        const sede = h.persona?.cargo || 'General';
+        const neto = h.resultado?.neto || 0;
+        const turnos = h.form?.diasTurno || 0;
+        granTotal += neto;
+        if (!sedesMap.has(sede)) sedesMap.set(sede, { totalNeto: 0, count: 0, turnos: 0 });
+        const curr = sedesMap.get(sede)!;
+        curr.totalNeto += neto;
+        curr.count += 1;
+        curr.turnos += turnos;
+      });
+
+      const rankingSedes = Array.from(sedesMap.entries()).sort((a, b) => b[1].totalNeto - a[1].totalNeto);
+
+      let txt = `🏢 **Distribución Financiera por Parqueaderos / Sedes (${rankingSedes.length} sedes | Total: ${fmt(granTotal)})**:\n\n`;
+      rankingSedes.forEach(([sede, datos], idx) => {
+        const pct = granTotal > 0 ? Math.round((datos.totalNeto / granTotal) * 100) : 0;
+        const medalla = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '📍';
+        txt += `${medalla} **${sede}**: **${fmt(datos.totalNeto)}** (${pct}% del presupuesto)\n` +
+          `   • ${datos.count} trabajadores | ${datos.turnos} turnos acumulados\n\n`;
+      });
+      return { text: txt.trim() };
+    }
+
+    // 6. RANKINGS DE SALARIO / PROMEDIO
+    const ordenados = [...historial].sort((a, b) => (b.resultado?.neto || 0) - (a.resultado?.neto || 0));
+    const totalNetoGlobal = ordenados.reduce((acc, h) => acc + (h.resultado?.neto || 0), 0);
+    const promedioNeto = ordenados.length > 0 ? Math.round(totalNetoGlobal / ordenados.length) : 0;
+    const totalTurnosGlobal = ordenados.reduce((acc, h) => acc + (h.form?.diasTurno || 0), 0);
+    const promedioTurnos = ordenados.length > 0 ? (totalTurnosGlobal / ordenados.length).toFixed(1) : '0';
+
+    if (esPromediosNomina) {
+      return {
+        text: `📊 **Métricas y Promedios de la Nómina Activa**:\n\n` +
+          `• 👥 Total de personal liquidado: **${ordenados.length} trabajadores**\n` +
+          `• 💰 Pago Neto Total: **${fmt(totalNetoGlobal)}**\n` +
+          `• 📈 **Promedio de pago por trabajador**: **${fmt(promedioNeto)}**\n` +
+          `• 📅 **Promedio de turnos laborados**: **${promedioTurnos} turnos / quincena**\n\n` +
+          `• 🏆 Mayor liquidación: **${ordenados[0].persona?.nombre}** (${fmt(ordenados[0].resultado?.neto || 0)})\n` +
+          `• 📉 Menor liquidación: **${ordenados[ordenados.length - 1].persona?.nombre}** (${fmt(ordenados[ordenados.length - 1].resultado?.neto || 0)})`
+      };
+    }
+
+    if (esRankingMenorSalario) {
+      const menores = [...ordenados].reverse().slice(0, 5);
+      let txt = `📉 **Trabajadores con menor valor liquidado en la nómina:**\n\n`;
+      menores.forEach((h, idx) => {
+        txt += `${idx + 1}. 👤 **${h.persona?.nombre}** (${h.persona?.cargo || 'General'}):\n` +
+          `   • **${fmt(h.resultado?.neto || 0)}** (${h.form?.diasTurno || 0} turnos × ${fmt(h.persona?.valorTurno || 0)})\n`;
+      });
+      txt += `\n📊 *Promedio general de nómina: ${fmt(promedioNeto)}*`;
+      return { text: txt.trim() };
+    }
+
+    // Ranking mayor salario por defecto
+    const top5 = ordenados.slice(0, 5);
+    let txt = `🏆 **Top 5 Trabajadores con mayor pago neto en la nómina:**\n\n`;
+    top5.forEach((h, idx) => {
+      const medalla = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '•';
+      txt += `${medalla} **${h.persona?.nombre}** (${h.persona?.cargo || 'General'}):\n` +
+        `   • 💰 **${fmt(h.resultado?.neto || 0)}** (${h.form?.diasTurno || 0} turnos × ${fmt(h.persona?.valorTurno || 0)})\n`;
+    });
+    txt += `\n📊 *El promedio neto por trabajador es de **${fmt(promedioNeto)}**.*`;
+    return { text: txt.trim() };
+  }
+
   // ── 0.0 LIQUIDACIÓN Y REGISTRO EN LA NÓMINA EN VIVO ─────────────────────────
   const verbosLiquidar = /\b(liquida|liquidale|ingresa|ingresale|calcula|calculale|mete|metele|agrega|agregale)\b/i;
   const esIntentoNomina =
-    !esAuditoria && !esIntentoAjusteNomina && (
+    !esAuditoria && !esIntentoAjusteNomina && !esCambioEstadoIndividual && (
       Boolean(context?.liquidandoPendiente) ||
       (verbosLiquidar.test(q) && (q.includes('nomina') || q.includes('cuadro') || q.includes('tabla') || /\b(\d+)\s*(?:dias?|turnos?)\b/.test(q) || /\bcon\s*(\d+)\s*(?:dias?|turnos?)\b/.test(q))) ||
       (q.includes('a la nomina') || q.includes('al cuadro') || q.includes('a la tabla') || q.includes('en la nomina') || q.includes('en el cuadro') || q.includes('en la tabla') || q.includes('agregar trabajador') || q.includes('agregar trabajadores') || q.includes('ingresar trabajador') || q.includes('ingresar trabajadores'))

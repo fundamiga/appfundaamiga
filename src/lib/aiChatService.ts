@@ -1779,14 +1779,33 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
       anomalías.push(dTxt);
     }
 
-    // 2. Turnos atípicos (> 16 turnos en quincena) o muchas horas extra (> 12 hrs)
-    const turnosAltos = historial.filter(h => (h.form?.diasTurno || 0) > 16 || (h.form?.horasAdicionales || 0) > 12);
-    if (turnosAltos.length > 0) {
-      let tTxt = `⚠️ **Turnos o recargos atípicos (${turnosAltos.length})**:\n`;
-      turnosAltos.forEach(h => {
-        tTxt += `   • 👤 **${h.persona?.nombre}**: **${h.form?.diasTurno || 0} turnos**, **${h.form?.horasAdicionales || 0} hrs extra**.\n`;
+    // 2. Liquidaciones con Neto en $0 o Negativo (exceso de deducciones/préstamos)
+    const netosInvalidos = historial.filter(h => (h.resultado?.neto || 0) <= 0);
+    if (netosInvalidos.length > 0) {
+      let nTxt = `🚨 **Neto a pagar en $0 o negativo (${netosInvalidos.length})**:\n`;
+      netosInvalidos.forEach(h => {
+        nTxt += `   • 👤 **${h.persona?.nombre}**: Neto **${fmt(h.resultado?.neto || 0)}** (Bruto: ${fmt(h.resultado?.totalBruto || 0)} | Desc: ${fmt(h.resultado?.totalDescuentos || 0)})\n`;
+      });
+      anomalías.push(nTxt);
+    }
+
+    // 2.1 Turnos inválidos (menores o iguales a 0) o horas extras desproporcionadas (> 35 hrs)
+    const turnosInvalidos = historial.filter(h => (h.form?.diasTurno || 0) <= 0);
+    if (turnosInvalidos.length > 0) {
+      let tTxt = `⚠️ **Registros con 0 turnos laborados (${turnosInvalidos.length})**:\n`;
+      turnosInvalidos.forEach(h => {
+        tTxt += `   • 👤 **${h.persona?.nombre}**: ${h.form?.diasTurno || 0} turnos registrados.\n`;
       });
       anomalías.push(tTxt);
+    }
+
+    const extrasExtremas = historial.filter(h => (h.form?.horasAdicionales || 0) > 35);
+    if (extrasExtremas.length > 0) {
+      let eTxt = `⚠️ **Horas extras inusualmente altas (> 35 hrs) (${extrasExtremas.length})**:\n`;
+      extrasExtremas.forEach(h => {
+        eTxt += `   • 👤 **${h.persona?.nombre}**: **${h.form?.horasAdicionales || 0} hrs extras** acumuladas.\n`;
+      });
+      anomalías.push(eTxt);
     }
 
     // 3. Tarifas en cero
@@ -2377,7 +2396,11 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     (/\b(compara|comparar|comparame)\b/i.test(q) && (q.includes('con') || q.includes(' y '))) ||
     (/\bpor\s*que\b/i.test(q) && /\bgana\s*mas\s*que\b/i.test(q));
 
-  if (esRankingSalario || esRankingMenorSalario || esConsultaHorasExtra || esConsultaPrestamos || esConsultaBonos || esParqueaderoCostoso || esPromediosNomina || esComparativa) {
+  const esHistoricoQuincenas =
+    /\b(quincenas?\s*pasadas?|quincenas?\s*anteriores?|historico|historico\s*de\s*quincenas|comparar\s*quincenas|cuanto\s*gastamos|evolucion\s*de\s*nomina|comparativa\s*de\s*quincenas)\b/i.test(q) ||
+    (q.includes('quincena') && (q.includes('pasada') || q.includes('anterior') || q.includes('comparada') || q.includes('comparar') || q.includes('historico')));
+
+  if (esRankingSalario || esRankingMenorSalario || esConsultaHorasExtra || esConsultaPrestamos || esConsultaBonos || esParqueaderoCostoso || esPromediosNomina || esComparativa || esHistoricoQuincenas) {
     const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
 
     if (!historial || historial.length === 0) {
@@ -2498,7 +2521,60 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
       return { text: txt.trim() };
     }
 
-    // 6. RANKINGS DE SALARIO / PROMEDIO
+    // 6. HISTÓRICO Y COMPARATIVA QUINCENA A QUINCENA
+    if (esHistoricoQuincenas) {
+      // Agrupar por campo quincena
+      const quinceMap = new Map<string, { totalNeto: number; totalBruto: number; trabajadores: number; turnos: number; horas: number }>();
+      historial.forEach(h => {
+        const q2 = (h.quincena as string) || 'Sin quincena';
+        const neto = h.resultado?.neto || 0;
+        const bruto = h.resultado?.totalBruto || 0;
+        const turnos = h.form?.diasTurno || 0;
+        const horas = h.form?.horasAdicionales || 0;
+        if (!quinceMap.has(q2)) quinceMap.set(q2, { totalNeto: 0, totalBruto: 0, trabajadores: 0, turnos: 0, horas: 0 });
+        const curr = quinceMap.get(q2)!;
+        curr.totalNeto += neto;
+        curr.totalBruto += bruto;
+        curr.trabajadores += 1;
+        curr.turnos += turnos;
+        curr.horas += horas;
+      });
+
+      const listaQuincenas = Array.from(quinceMap.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+
+      if (listaQuincenas.length === 0) {
+        return { text: `📋 No hay registros con quincenas diferenciadas para hacer comparativa.` };
+      }
+
+      let txt = `📈 **Histórico y Comparativa de Quincenas (${listaQuincenas.length} período${listaQuincenas.length !== 1 ? 's' : ''} registrado${listaQuincenas.length !== 1 ? 's' : ''}):**\n\n`;
+
+      listaQuincenas.forEach(([periodo, datos], idx) => {
+        const ant = listaQuincenas[idx - 1];
+        let variacion = '';
+        if (ant) {
+          const diff = datos.totalNeto - ant[1].totalNeto;
+          const pct = ant[1].totalNeto > 0 ? Math.round((diff / ant[1].totalNeto) * 100) : 0;
+          variacion = diff >= 0
+            ? ` *(↑ +${fmt(diff)} vs anterior, +${pct}%)*`
+            : ` *(↓ ${fmt(diff)} vs anterior, ${pct}%)*`;
+        }
+        txt += `📅 **${periodo}**${variacion}:\n` +
+          `   • 💰 Neto Total: **${fmt(datos.totalNeto)}** | Bruto: ${fmt(datos.totalBruto)}\n` +
+          `   • 👥 ${datos.trabajadores} trabajadores | 📆 ${datos.turnos} turnos | ⏱️ ${datos.horas} hrs extras\n\n`;
+      });
+
+      if (listaQuincenas.length >= 2) {
+        const primera = listaQuincenas[0][1];
+        const ultima = listaQuincenas[listaQuincenas.length - 1][1];
+        const difTotal = ultima.totalNeto - primera.totalNeto;
+        const pctTotal = primera.totalNeto > 0 ? Math.round((difTotal / primera.totalNeto) * 100) : 0;
+        txt += `📊 **Balance total entre primer y último período:** ${difTotal >= 0 ? `+${fmt(difTotal)} (📈 +${pctTotal}%)` : `${fmt(difTotal)} (📉 ${pctTotal}%)`}\n`;
+      }
+
+      return { text: txt.trim() };
+    }
+
+    // 7. RANKINGS DE SALARIO / PROMEDIO
     const ordenados = [...historial].sort((a, b) => (b.resultado?.neto || 0) - (a.resultado?.neto || 0));
     const totalNetoGlobal = ordenados.reduce((acc, h) => acc + (h.resultado?.neto || 0), 0);
     const promedioNeto = ordenados.length > 0 ? Math.round(totalNetoGlobal / ordenados.length) : 0;
@@ -2519,25 +2595,25 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
 
     if (esRankingMenorSalario) {
       const menores = [...ordenados].reverse().slice(0, 5);
-      let txt = `📉 **Trabajadores con menor valor liquidado en la nómina:**\n\n`;
+      let txt2 = `📉 **Trabajadores con menor valor liquidado en la nómina:**\n\n`;
       menores.forEach((h, idx) => {
-        txt += `${idx + 1}. 👤 **${h.persona?.nombre}** (${h.persona?.cargo || 'General'}):\n` +
+        txt2 += `${idx + 1}. 👤 **${h.persona?.nombre}** (${h.persona?.cargo || 'General'}):\n` +
           `   • **${fmt(h.resultado?.neto || 0)}** (${h.form?.diasTurno || 0} turnos × ${fmt(h.persona?.valorTurno || 0)})\n`;
       });
-      txt += `\n📊 *Promedio general de nómina: ${fmt(promedioNeto)}*`;
-      return { text: txt.trim() };
+      txt2 += `\n📊 *Promedio general de nómina: ${fmt(promedioNeto)}*`;
+      return { text: txt2.trim() };
     }
 
     // Ranking mayor salario por defecto
     const top5 = ordenados.slice(0, 5);
-    let txt = `🏆 **Top 5 Trabajadores con mayor pago neto en la nómina:**\n\n`;
+    let txt3 = `🏆 **Top 5 Trabajadores con mayor pago neto en la nómina:**\n\n`;
     top5.forEach((h, idx) => {
       const medalla = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '•';
-      txt += `${medalla} **${h.persona?.nombre}** (${h.persona?.cargo || 'General'}):\n` +
+      txt3 += `${medalla} **${h.persona?.nombre}** (${h.persona?.cargo || 'General'}):\n` +
         `   • 💰 **${fmt(h.resultado?.neto || 0)}** (${h.form?.diasTurno || 0} turnos × ${fmt(h.persona?.valorTurno || 0)})\n`;
     });
-    txt += `\n📊 *El promedio neto por trabajador es de **${fmt(promedioNeto)}**.*`;
-    return { text: txt.trim() };
+    txt3 += `\n📊 *El promedio neto por trabajador es de **${fmt(promedioNeto)}**.*`;
+    return { text: txt3.trim() };
   }
 
   // ── 0.0 LIQUIDACIÓN Y REGISTRO EN LA NÓMINA EN VIVO ─────────────────────────

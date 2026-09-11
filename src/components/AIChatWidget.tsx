@@ -1,7 +1,7 @@
 'use client';
 
 import React, { useState, useRef, useEffect } from 'react';
-import { Sparkles, X, Send, Bot, User, ChevronDown, Check, Copy, Calculator, Shield, Users, HelpCircle, RefreshCw, Zap, MapPin, Pencil, Trash2 } from 'lucide-react';
+import { Sparkles, X, Send, Bot, User, ChevronDown, Check, Copy, Calculator, Shield, Users, HelpCircle, RefreshCw, Zap, MapPin, Pencil, Trash2, Mic, MicOff } from 'lucide-react';
 import { processAIChatMessage, ChatMessage, ChatAction, executeUpdateTrabajador, executeLiquidacionDirecta, executeLiquidacionMasiva, executePagoMasivo, executeCrearTrabajador, executeEliminarDeNomina, executeModificarTurnosLiquidacion, executeCambiarEstadoIndividual, ChatContext } from '@/lib/aiChatService';
 
 export default function AIChatWidget() {
@@ -19,6 +19,32 @@ export default function AIChatWidget() {
   ]);
   const [inputText, setInputText] = useState('');
   const [isTyping, setIsTyping] = useState(false);
+  const [isListening, setIsListening] = useState(false);
+
+  const startVoiceInput = () => {
+    if (typeof window === 'undefined') return;
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+      alert('Tu navegador no soporta entrada de voz. Usa Chrome o un navegador basado en Chromium.');
+      return;
+    }
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'es-CO';
+    recognition.interimResults = false;
+    recognition.maxAlternatives = 1;
+    recognition.continuous = false;
+    setIsListening(true);
+    recognition.start();
+    recognition.onresult = (event: any) => {
+      const transcript = event.results[0][0].transcript;
+      setIsListening(false);
+      if (transcript && transcript.trim()) {
+        setInputText(transcript.trim());
+      }
+    };
+    recognition.onerror = () => { setIsListening(false); };
+    recognition.onend = () => { setIsListening(false); };
+  };
 
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
@@ -819,9 +845,18 @@ export default function AIChatWidget() {
               type="text"
               value={inputText}
               onChange={e => setInputText(e.target.value)}
-              placeholder="Escribe un nombre, cédula o pregunta..."
-              className="flex-1 px-4 py-2.5 text-xs bg-slate-50 border border-gray-200 rounded-2xl focus:outline-none focus:bg-white focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20 font-medium text-slate-800"
+              placeholder={isListening ? '🎙️ Escuchando... habla ahora' : 'Escribe un nombre, cédula o pregunta...'}
+              className={`flex-1 px-4 py-2.5 text-xs border rounded-2xl focus:outline-none font-medium transition-all ${isListening ? 'bg-red-50 border-red-300 text-red-700 focus:border-red-400 focus:ring-2 focus:ring-red-300/30 animate-pulse' : 'bg-slate-50 border-gray-200 text-slate-800 focus:bg-white focus:border-emerald-500 focus:ring-2 focus:ring-emerald-500/20'}`}
             />
+            <button
+              type="button"
+              onClick={startVoiceInput}
+              disabled={isTyping}
+              className={`w-10 h-10 rounded-2xl flex items-center justify-center shadow-sm transition-all shrink-0 active:scale-95 ${isListening ? 'bg-red-500 hover:bg-red-600 text-white animate-pulse' : 'bg-slate-100 hover:bg-slate-200 text-slate-500 hover:text-slate-700'}`}
+              title={isListening ? 'Escuchando...' : 'Hablar (dictado por voz)'}
+            >
+              {isListening ? <MicOff size={15} /> : <Mic size={15} />}
+            </button>
             <button
               type="submit"
               disabled={!inputText.trim() || isTyping}
@@ -832,6 +867,7 @@ export default function AIChatWidget() {
             </button>
           </form>
         </div>
+
       )}
 
       {/* Launcher & Speech Bubble */}

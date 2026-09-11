@@ -32,6 +32,12 @@ export interface ChatContext {
     tipo: 'MODIFICAR_DATO' | 'MODIFICAR_TURNOS' | 'PAGO_MASIVO' | 'LIQUIDAR_DIRECTA' | 'LIQUIDAR_MASIVO';
     payload: any;
   };
+  ajusteNominaPendiente?: {
+    historialId: string;
+    nombre: string;
+    cedula?: string;
+    campoEsperado: 'DIAS_SEGURIDAD_SOCIAL' | 'PRESTAMO' | 'BONO' | 'HORAS_EXTRA' | 'TURNOS';
+  };
   ultimaLiquidacion?: {
     diasTurno: number;
     turnosAdicionales?: number;
@@ -653,7 +659,16 @@ export async function executeModificarTurnosLiquidacion(payload: {
   historialId: string;
   nombre: string;
   cedula?: string;
-  nuevosDias: number;
+  nuevosDias?: number;
+  diasSeguridadSocial?: number;
+  tieneDescuentoSeguridad?: boolean;
+  valorDescuentoSeguridad?: number;
+  nuevoBono?: number;
+  tieneBono?: boolean;
+  nuevoPrestamo?: number;
+  tieneDescuentoPrestamo?: boolean;
+  nuevasHorasAdicionales?: number;
+  nuevosTurnosAdicionales?: number;
 }): Promise<{ success: boolean; message: string; nuevoNeto?: number }> {
   try {
     const { data: row, error: fetchErr } = await supabase
@@ -669,38 +684,100 @@ export async function executeModificarTurnosLiquidacion(payload: {
     const p = row.persona || {};
     const f = row.form || {};
     const valorTurno = Number(p.valorTurno) || 0;
-    const valorHora = Number(p.valorHoraAdicional) || 0;
-    const nuevosDias = Number(payload.nuevosDias) || 0;
-    const horasAdicionales = Number(f.horasAdicionales) || 0;
-    const bono = Number(f.bono) || 0;
-    const valorDescuentoPrestamo = Number(f.valorDescuentoPrestamo) || 0;
-    const tieneDescuentoPrestamo = valorDescuentoPrestamo > 0;
+    const valorHora = Number(p.valorHoraAdicional) || Math.round(valorTurno / 8);
 
-    const tieneDescuentoSeguridad = nuevosDias > 0 && !row.sinARL;
-    const valorDescuentoSeguridad = tieneDescuentoSeguridad ? calcularDescuentoARLPila(nuevosDias) : 0;
+    // 1. Días de turno
+    const diasTurno = payload.nuevosDias !== undefined ? Number(payload.nuevosDias) : (Number(f.diasTurno || f.turnos) || 0);
 
-    const subtotalTurnos = nuevosDias * valorTurno;
+    // 2. Turnos adicionales
+    const turnosAdicionales = payload.nuevosTurnosAdicionales !== undefined ? Number(payload.nuevosTurnosAdicionales) : (Number(f.turnosAdicionales) || 0);
+
+    // 3. Horas adicionales
+    const horasAdicionales = payload.nuevasHorasAdicionales !== undefined ? Number(payload.nuevasHorasAdicionales) : (Number(f.horasAdicionales) || 0);
+
+    // 4. Bono
+    let tieneBono = f.tieneBono || false;
+    let valorBono = Number(f.bono || f.valorBono) || 0;
+    if (payload.tieneBono !== undefined) {
+      tieneBono = payload.tieneBono;
+      valorBono = tieneBono ? (payload.nuevoBono !== undefined ? Number(payload.nuevoBono) : valorBono) : 0;
+    } else if (payload.nuevoBono !== undefined) {
+      valorBono = Number(payload.nuevoBono);
+      tieneBono = valorBono > 0;
+    }
+
+    // 5. Préstamo / Aporte
+    let tieneDescuentoPrestamo = f.tieneDescuentoPrestamo !== undefined ? f.tieneDescuentoPrestamo : (Number(f.valorDescuentoPrestamo) > 0);
+    let valorDescuentoPrestamo = Number(f.valorDescuentoPrestamo) || 0;
+    if (payload.tieneDescuentoPrestamo !== undefined) {
+      tieneDescuentoPrestamo = payload.tieneDescuentoPrestamo;
+      valorDescuentoPrestamo = tieneDescuentoPrestamo ? (payload.nuevoPrestamo !== undefined ? Number(payload.nuevoPrestamo) : (valorDescuentoPrestamo || 4000)) : 0;
+    } else if (payload.nuevoPrestamo !== undefined) {
+      valorDescuentoPrestamo = Number(payload.nuevoPrestamo);
+      tieneDescuentoPrestamo = valorDescuentoPrestamo > 0;
+    }
+
+    // 6. Seguridad Social / Razón Social / ARL PILA
+    let tieneDescuentoSeguridad = f.tieneDescuentoSeguridad !== undefined ? f.tieneDescuentoSeguridad : !row.sinARL;
+    let diasARL = f.diasARL !== undefined ? Number(f.diasARL) : diasTurno;
+    let valorDescuentoSeguridad = Number(f.valorDescuentoSeguridad) || 0;
+
+    if (payload.tieneDescuentoSeguridad !== undefined) {
+      tieneDescuentoSeguridad = payload.tieneDescuentoSeguridad;
+    }
+
+    if (payload.diasSeguridadSocial !== undefined) {
+      diasARL = Number(payload.diasSeguridadSocial);
+      tieneDescuentoSeguridad = diasARL > 0;
+      valorDescuentoSeguridad = tieneDescuentoSeguridad ? calcularDescuentoARLPila(diasARL) : 0;
+    } else if (payload.valorDescuentoSeguridad !== undefined) {
+      valorDescuentoSeguridad = Number(payload.valorDescuentoSeguridad);
+      tieneDescuentoSeguridad = valorDescuentoSeguridad > 0;
+    } else if (payload.nuevosDias !== undefined && (diasARL === (Number(f.diasTurno) || 0) || diasARL === 0)) {
+      diasARL = diasTurno;
+      valorDescuentoSeguridad = tieneDescuentoSeguridad ? calcularDescuentoARLPila(diasARL) : 0;
+    } else if (tieneDescuentoSeguridad && valorDescuentoSeguridad === 0 && diasARL > 0) {
+      valorDescuentoSeguridad = calcularDescuentoARLPila(diasARL);
+    }
+
+    // Recalcular devengados y deducciones
+    const subtotalTurnos = diasTurno * valorTurno;
+    const subtotalTurnosAdic = turnosAdicionales * valorTurno;
     const subtotalHoras = horasAdicionales * valorHora;
-    const totalDevengado = subtotalTurnos + subtotalHoras + bono + (tieneDescuentoSeguridad ? valorDescuentoSeguridad : 0);
+    const totalDevengado = subtotalTurnos + subtotalTurnosAdic + subtotalHoras + valorBono + (tieneDescuentoSeguridad ? valorDescuentoSeguridad : 0);
     const totalDeducciones = (tieneDescuentoSeguridad ? valorDescuentoSeguridad : 0) + (tieneDescuentoPrestamo ? valorDescuentoPrestamo : 0);
     const neto = totalDevengado - totalDeducciones;
 
     const updatedForm = {
       ...f,
-      diasTurno: nuevosDias,
-      turnos: nuevosDias
+      diasTurno,
+      turnos: diasTurno,
+      turnosAdicionales,
+      horasAdicionales,
+      tieneBono,
+      bono: valorBono,
+      valorBono,
+      tieneDescuentoPrestamo,
+      valorDescuentoPrestamo,
+      tieneDescuentoSeguridad,
+      diasARL,
+      valorDescuentoSeguridad
     };
 
     const updatedResultado = {
       ...row.resultado,
       subtotalTurnos,
+      subtotalTurnosAdicionales: subtotalTurnosAdic,
+      subtotalHoras,
+      bono: valorBono,
       totalDevengado,
       totalDeducciones,
-      descuentoSeguridad: valorDescuentoSeguridad,
+      descuentoSeguridad: tieneDescuentoSeguridad ? valorDescuentoSeguridad : 0,
+      descuentoPrestamo: tieneDescuentoPrestamo ? valorDescuentoPrestamo : 0,
       neto,
       detalle: {
         ...(row.resultado?.detalle || {}),
-        turnos: `${nuevosDias} días × ${fmt(valorTurno)} = ${fmt(subtotalTurnos)}`
+        turnos: `${diasTurno} días × ${fmt(valorTurno)} = ${fmt(subtotalTurnos)}`
       }
     };
 
@@ -713,7 +790,7 @@ export async function executeModificarTurnosLiquidacion(payload: {
       .eq('id', payload.historialId);
 
     if (updateErr) {
-      return { success: false, message: `❌ Error al actualizar turnos en Supabase: ${updateErr.message}` };
+      return { success: false, message: `❌ Error al actualizar en Supabase: ${updateErr.message}` };
     }
 
     if (typeof window !== 'undefined') {
@@ -723,13 +800,29 @@ export async function executeModificarTurnosLiquidacion(payload: {
       }));
     }
 
+    const cambiosTxt: string[] = [];
+    if (payload.nuevosDias !== undefined) cambiosTxt.push(`• 📅 Días Turno: **${diasTurno} turnos** (${fmt(subtotalTurnos)})`);
+    if (payload.diasSeguridadSocial !== undefined) {
+      cambiosTxt.push(`• 🛡️ Seguridad Social / Razón Social: **${diasARL} días a descontar** → **${fmt(valorDescuentoSeguridad)}**`);
+    } else if (payload.tieneDescuentoSeguridad === false) {
+      cambiosTxt.push(`• 🛡️ Seguridad Social: **Exento ($0)**`);
+    }
+    if (payload.nuevoBono !== undefined || payload.tieneBono !== undefined) {
+      cambiosTxt.push(tieneBono ? `• 🎁 Bono: **+${fmt(valorBono)}**` : `• 🎁 Bono: **$0 (sin bono)**`);
+    }
+    if (payload.nuevoPrestamo !== undefined || payload.tieneDescuentoPrestamo !== undefined) {
+      cambiosTxt.push(tieneDescuentoPrestamo ? `• 💳 Préstamo/Aporte: **-${fmt(valorDescuentoPrestamo)}**` : `• 💳 Préstamo/Aporte: **$0 (sin descuento)**`);
+    }
+    if (payload.nuevasHorasAdicionales !== undefined) {
+      cambiosTxt.push(horasAdicionales > 0 ? `• ⏱️ Horas Extra: **${horasAdicionales} hrs** (${fmt(subtotalHoras)})` : `• ⏱️ Horas Extra: **0 hrs**`);
+    }
+
     return {
       success: true,
-      message: `✅ **¡Turnos actualizados exitosamente en la nómina!**\n\n` +
-        `• 👤 **Trabajador**: **${payload.nombre}**\n` +
-        `• 📅 **Días actualizados**: **${nuevosDias} turnos** (${fmt(valorTurno)} c/u)\n` +
-        `• 💰 **Nuevo Neto a Pagar**: **${fmt(neto)}**\n` +
-        `• 🔄 *El cuadro de nómina y los totales se han sincronizado en vivo.*`,
+      message: `✅ **¡Nómina actualizada exitosamente para ${payload.nombre}!**\n\n` +
+        cambiosTxt.join('\n') + `\n\n` +
+        `💰 **Nuevo Neto a Pagar**: **${fmt(neto)}**\n` +
+        `🔄 *El cuadro de nómina y los totales se han recalculado en vivo.*`,
       nuevoNeto: neto
     };
   } catch (err: any) {
@@ -801,6 +894,10 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     .replace(/\b(nequii|neki|neky)\b/g, 'nequi')
     .replace(/\b(daviplataa|daviplta)\b/g, 'daviplata')
     .replace(/\b(efectivoo|efectvo|fefectivo)\b/g, 'efectivo')
+    .replace(/\b(desccntar|desconatr|descontarr|descontad|descontarle)\b/g, 'descontar')
+    .replace(/\b(sociaol|socila|socil|soacial)\b/g, 'social')
+    .replace(/\b(ponel|ponlee|ponele|pongale)\b/g, 'ponle')
+    .replace(/\b(quitale|quitalo|quitala|quitarle|quitelo|quiteme|quitame)\b/g, 'quita')
     .replace(/\b5\s*-\s*6\b/g, '5 - 6')
     .replace(/\b6\s*-\s*6\b/g, '6 - 6')
     .replace(/\b2\s*-\s*10\b/g, '2 - 10');
@@ -1712,10 +1809,417 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
     };
   }
 
+  // ── 0.003 MOTOR INTELIGENTE DE AJUSTES DE NÓMINA EN VIVO ───────────────────
+  // Permite modificar seguridad social / razón social, préstamos/aportes, bonos, horas extra y turnos
+  // tanto de forma individual como combinando múltiples cambios a la vez.
+
+  const tieneTerminosSeguridadSocial =
+    q.includes('seguridad social') || q.includes('razon social') || q.includes('dias a descontar') ||
+    q.includes('descontar') || q.includes('arl pila') || q.includes('descuento arl');
+
+  const tieneTerminosAjustes =
+    tieneTerminosSeguridadSocial ||
+    q.includes('prestamo') || q.includes('prestamos') || q.includes('aporte') || q.includes('aportes') ||
+    q.includes('bono') || q.includes('bonos') || q.includes('bonificacion') ||
+    q.includes('hora extra') || q.includes('horas extra') || q.includes('horas adicionales') || q.includes('turnos adicionales');
+
+  const tieneVerbosAjustes =
+    /\b(cambia|cambiar|cambiale|pon|poner|ponle|quita|quitar|quitale|ajusta|ajustar|actualiza|actualizar|modifica|modificar|subele|bajale|elimina|eliminad)\b/i.test(q) ||
+    q.includes('dias a descontar son') || q.includes('dias a descontar') || q.includes('a descontar');
+
+  const esIntentoAjusteNomina =
+    Boolean(context?.ajusteNominaPendiente) ||
+    (tieneTerminosAjustes && (tieneVerbosAjustes || Boolean(context?.ultimoTrabajador)));
+
+  if (esIntentoAjusteNomina) {
+    const { data: todosTrabajadores } = await supabase.from('trabajadores').select('*');
+    const { data: historial } = await supabase.from('historial_liquidaciones').select('*');
+
+    if (historial && historial.length > 0) {
+      // 1. CASO CONVERSACIONAL PENDIENTE: El usuario responde cuántos días de seguridad social aplicar
+      if (context?.ajusteNominaPendiente?.campoEsperado === 'DIAS_SEGURIDAD_SOCIAL') {
+        const rowPendiente = historial.find(h => h.id === context.ajusteNominaPendiente!.historialId) ||
+          historial.find(h => String(h.persona?.cedula || '').trim() === String(context.ajusteNominaPendiente!.cedula || '').trim());
+
+        if (rowPendiente) {
+          const matchNum = q.match(/\b(\d{1,2})\b/);
+          const esQuitar = q.includes('quitar') || q.includes('sin') || q.includes('cero') || q.includes('ningun') || q.includes('no');
+          const diasSS = matchNum ? parseInt(matchNum[1], 10) : (esQuitar ? 0 : null);
+
+          if (diasSS !== null) {
+            const p = rowPendiente.persona || {};
+            const f = rowPendiente.form || {};
+            const valorTurno = Number(p.valorTurno) || 0;
+            const valorHora = Number(p.valorHoraAdicional) || Math.round(valorTurno / 8);
+            const diasTurno = Number(f.diasTurno || f.turnos) || 0;
+            const horasAdic = Number(f.horasAdicionales) || 0;
+            const bono = Number(f.bono || f.valorBono) || 0;
+            const prestamo = Number(f.valorDescuentoPrestamo) || 0;
+
+            const tieneDescuentoSeguridad = diasSS > 0;
+            const valorARL = tieneDescuentoSeguridad ? calcularDescuentoARLPila(diasSS) : 0;
+
+            const subtotalTurnos = diasTurno * valorTurno;
+            const subtotalHoras = horasAdic * valorHora;
+            const totalDevengado = subtotalTurnos + subtotalHoras + bono + valorARL;
+            const totalDeducciones = valorARL + prestamo;
+            const nuevoNeto = totalDevengado - totalDeducciones;
+
+            return {
+              text: `🛡️ **¿Los días a descontar de seguridad social / razón social de ${p.nombre.split(' ')[0]} son ${diasSS} (${fmt(valorARL)})?**\n\n` +
+                `• 👤 **Trabajador**: **${p.nombre}** (C.C. \`${p.cedula || 'S/C'}\`)\n` +
+                `• 🏢 **Parqueadero**: ${p.cargo || 'General'}\n` +
+                `• 📅 **Días Turno**: ${diasTurno} días × ${fmt(valorTurno)} = ${fmt(subtotalTurnos)}\n` +
+                `• 🛡️ **Seguridad Social (ARL)**: ${diasSS > 0 ? `${diasSS} días cotizados → **-${fmt(valorARL)}**` : 'Exento ($0)'}\n` +
+                (prestamo > 0 ? `• 💳 **Descuento Préstamo/Aporte**: -${fmt(prestamo)}\n` : '') +
+                (bono > 0 ? `• 🎁 **Bono**: +${fmt(bono)}\n` : '') +
+                `• 💵 **NUEVO NETO A PAGAR**: **${fmt(nuevoNeto)}** (Antes: ${fmt(rowPendiente.resultado?.neto || 0)})\n\n` +
+                `*Presiona el botón a continuación para aplicar el cambio en el cuadro de nómina o escribe "confirmo":*`,
+              acciones: [
+                {
+                  label: `⚡ Confirmar ${diasSS} días de seguridad social (${fmt(nuevoNeto)})`,
+                  tipo: 'MODIFICAR_TURNOS',
+                  payload: {
+                    historialId: rowPendiente.id,
+                    nombre: p.nombre,
+                    cedula: p.cedula,
+                    diasSeguridadSocial: diasSS,
+                    tieneDescuentoSeguridad,
+                    valorDescuentoSeguridad: valorARL
+                  }
+                },
+                {
+                  label: `📍 Ubicar a ${p.nombre.split(' ')[0]} en tabla`,
+                  tipo: 'DESPLAZAR_TABLA',
+                  payload: { cedula: p.cedula, nombre: p.nombre }
+                }
+              ],
+              nuevoContexto: {
+                ultimoTrabajador: p,
+                ajusteNominaPendiente: undefined,
+                modificacionPendiente: {
+                  tipo: 'MODIFICAR_TURNOS',
+                  payload: {
+                    historialId: rowPendiente.id,
+                    nombre: p.nombre,
+                    cedula: p.cedula,
+                    diasSeguridadSocial: diasSS,
+                    tieneDescuentoSeguridad,
+                    valorDescuentoSeguridad: valorARL
+                  }
+                }
+              }
+            };
+          }
+        }
+      }
+
+      // 2. IDENTIFICAR AL TRABAJADOR DE LA NÓMINA
+      let enNomina: any = null;
+
+      // Buscar por nombre exacto o tokens de nombre en historial
+      const historialConScore = historial.map(h => {
+        const nom = (h.persona?.nombre || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+        const ced = String(h.persona?.cedula || '').trim();
+        let score = 0;
+
+        // Cédula exacta en query
+        if (ced && q.includes(ced)) score += 200;
+
+        // Nombre completo o partes
+        const partesNom = nom.split(/\s+/).filter((p: string) => p.length >= 3);
+        const partesQuery = q.split(/\s+/).filter((w: string) => w.length >= 3 && !['seguridad', 'social', 'razon', 'descontar', 'prestamo', 'aporte', 'bono', 'hora', 'extra', 'turnos', 'dias', 'cambia', 'ponle', 'quita', 'quitar'].includes(w));
+
+        if (nom && q.includes(nom)) {
+          score += 150 + nom.length;
+        } else {
+          for (const pq of partesQuery) {
+            if (partesNom.includes(pq)) score += 30;
+          }
+        }
+
+        return { h, score };
+      }).filter(x => x.score > 0).sort((a, b) => b.score - a.score);
+
+      if (historialConScore.length > 0 && historialConScore[0].score >= 30) {
+        enNomina = historialConScore[0].h;
+      }
+
+      // Fallback a último trabajador de contexto si venimos hablando de él
+      if (!enNomina && context?.ultimoTrabajador) {
+        enNomina = historial.find(h =>
+          String(h.persona?.cedula || '').trim() === String(context.ultimoTrabajador.cedula || '').trim() ||
+          h.persona?.nombre === context.ultimoTrabajador.nombre
+        );
+      }
+
+      // Si no está en nómina pero sí en la base general de trabajadores
+      if (!enNomina && todosTrabajadores) {
+        const matchBase = todosTrabajadores.find(t => {
+          const nom = t.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+          return q.includes(nom) || (t.cedula && q.includes(String(t.cedula).trim()));
+        });
+        if (matchBase) {
+          return {
+            text: `ℹ️ **${matchBase.nombre}** no se encuentra actualmente liquidado en el cuadro de nómina de esta quincena.\n\n` +
+              `• Para poder realizar modificaciones sobre sus turnos, seguridad social o bonos, primero debes ingresarlo.\n\n` +
+              `*Presiona el botón a continuación para liquidarlo:*`,
+            acciones: [
+              {
+                label: `⚡ Agregar a ${matchBase.nombre.split(' ')[0]} a la nómina`,
+                tipo: 'CONSULTAR_DETALLE',
+                payload: `agrega a ${matchBase.nombre.split(' ')[0]} a la nomina`
+              }
+            ]
+          };
+        }
+      }
+
+      // 3. SI ENCONTRAMOS AL TRABAJADOR EN NÓMINA, PROCESAR LOS AJUSTES SOLICITADOS
+      if (enNomina) {
+        const p = enNomina.persona || {};
+        const f = enNomina.form || {};
+        const nomCorto = p.nombre.split(' ')[0];
+
+        // ── CASO A: Solo pidió cambiar seguridad social / razón social SIN indicar días ──
+        const soloPideSeguridadSocialSinValor =
+          tieneTerminosSeguridadSocial &&
+          !/\b\d{1,2}\s*(?:dias?|turnos?)\b/.test(q) &&
+          !/(?:son|=|:)\s*\d{1,2}/.test(q) &&
+          !q.includes('quita') && !q.includes('sin') && !q.includes('cero') &&
+          !q.includes('bono') && !q.includes('prestamo') && !q.includes('horas');
+
+        if (soloPideSeguridadSocialSinValor) {
+          const diasAct = f.diasARL !== undefined ? f.diasARL : (f.diasTurno || 0);
+          const valAct = f.valorDescuentoSeguridad || calcularDescuentoARLPila(diasAct);
+
+          return {
+            text: `🛡️ **Ajuste de Seguridad Social / Razón Social para ${p.nombre}**:\n\n` +
+              `• 📊 Actualmente tiene asignados **${diasAct} días a descontar** (${fmt(valAct)}).\n\n` +
+              `👉 **¿Cuántos días a descontar de seguridad social / razón social deseas asignarle a ${nomCorto}?**\n` +
+              `*Escribe por ejemplo: "Pon los días a descontar en 7", "Quitar seguridad social" o pulsa un botón:*`,
+            acciones: [
+              { label: `🛡️ 7 días (${fmt(calcularDescuentoARLPila(7))})`, tipo: 'CONSULTAR_DETALLE', payload: `pon los dias a descontar de ${nomCorto} en 7` },
+              { label: `🛡️ 15 días (${fmt(calcularDescuentoARLPila(15))})`, tipo: 'CONSULTAR_DETALLE', payload: `pon los dias a descontar de ${nomCorto} en 15` },
+              { label: `🛡️ 16 días (${fmt(calcularDescuentoARLPila(16))})`, tipo: 'CONSULTAR_DETALLE', payload: `pon los dias a descontar de ${nomCorto} en 16` },
+              { label: `🚫 Quitar seguridad social ($0)`, tipo: 'CONSULTAR_DETALLE', payload: `quitar seguridad social a ${nomCorto}` }
+            ],
+            nuevoContexto: {
+              ultimoTrabajador: p,
+              ajusteNominaPendiente: {
+                historialId: enNomina.id,
+                nombre: p.nombre,
+                cedula: p.cedula,
+                campoEsperado: 'DIAS_SEGURIDAD_SOCIAL'
+              }
+            }
+          };
+        }
+
+        // ── CASO B: Parsea uno o múltiples ajustes combinados ──
+        let nuevosDiasTurno: number | undefined = undefined;
+        let diasSeguridadSocial: number | undefined = undefined;
+        let tieneDescuentoSeguridad: boolean | undefined = undefined;
+        let nuevoBono: number | undefined = undefined;
+        let tieneBono: boolean | undefined = undefined;
+        let nuevoPrestamo: number | undefined = undefined;
+        let tieneDescuentoPrestamo: boolean | undefined = undefined;
+        let nuevasHorasAdic: number | undefined = undefined;
+        let nuevosTurnosAdic: number | undefined = undefined;
+
+        let huboCambios = false;
+
+        // 1. Seguridad Social / Razón Social
+        if (tieneTerminosSeguridadSocial) {
+          if (q.includes('quita') || q.includes('sin') || q.includes('elimina') || q.includes('exento')) {
+            diasSeguridadSocial = 0;
+            tieneDescuentoSeguridad = false;
+            huboCambios = true;
+          } else {
+            const mSS =
+              q.match(/(?:dias?\s*(?:a\s*)?descontar|seguridad\s*social|razon\s*social|arl).*?(?:son|=|:|\ba\b|\ben\b)?\s*(\d{1,2})\b/i) ||
+              q.match(/\b(\d{1,2})\s*dias?\s*(?:a\s*)?descontar/i) ||
+              q.match(/(?:pon|ponle|con|de)\s*(\d{1,2})\s*dias?\s*(?:de\s*)?(?:seguridad|razon|arl)/i);
+            if (mSS) {
+              diasSeguridadSocial = parseInt(mSS[1], 10);
+              tieneDescuentoSeguridad = diasSeguridadSocial > 0;
+              huboCambios = true;
+            }
+          }
+        }
+
+        // 2. Préstamos y Aportes
+        if (q.includes('prestamo') || q.includes('aporte')) {
+          if (q.includes('quita') || q.includes('sin') || q.includes('elimina')) {
+            tieneDescuentoPrestamo = false;
+            nuevoPrestamo = 0;
+            huboCambios = true;
+          } else {
+            const mPrestamo = q.match(/(?:prestamo|aporte)(?:\s*(?:de|=|:))?\s*(?:\$|\b)([0-9]{1,3}(?:[.,][0-9]{3})+|[0-9]{3,6})\b/i);
+            if (mPrestamo) {
+              nuevoPrestamo = parseInt(mPrestamo[1].replace(/[.,]/g, ''), 10);
+              tieneDescuentoPrestamo = true;
+              huboCambios = true;
+            } else if (q.includes('ponle') || q.includes('con') || q.includes('agrega')) {
+              nuevoPrestamo = 4000;
+              tieneDescuentoPrestamo = true;
+              huboCambios = true;
+            }
+          }
+        }
+
+        // 3. Bonos
+        if (q.includes('bono') || q.includes('bonificacion')) {
+          if (q.includes('quita') || q.includes('sin') || q.includes('elimina')) {
+            tieneBono = false;
+            nuevoBono = 0;
+            huboCambios = true;
+          } else {
+            const mBono = q.match(/bono(?:\s*(?:de|=|:))?\s*(?:\$|\b)([0-9]{1,3}(?:[.,][0-9]{3})+|[0-9]{3,6})\b/i);
+            if (mBono) {
+              nuevoBono = parseInt(mBono[1].replace(/[.,]/g, ''), 10);
+              tieneBono = true;
+              huboCambios = true;
+            }
+          }
+        }
+
+        // 4. Horas extra y Turnos adicionales
+        if (q.includes('hora') || q.includes('extra') || q.includes('adicional')) {
+          if (q.includes('quita') || q.includes('sin') || q.includes('elimina')) {
+            nuevasHorasAdic = 0;
+            huboCambios = true;
+          } else {
+            const mHoras = q.match(/(\d{1,2})\s*(?:horas?\s*extras?|horas?\s*adicionales?|extras?)/i);
+            if (mHoras) {
+              nuevasHorasAdic = parseInt(mHoras[1], 10);
+              huboCambios = true;
+            }
+            const mTurnosAdic = q.match(/(\d{1,2})\s*turnos?\s*adicionales?/i);
+            if (mTurnosAdic) {
+              nuevosTurnosAdic = parseInt(mTurnosAdic[1], 10);
+              huboCambios = true;
+            }
+          }
+        }
+
+        // 5. Días de turno
+        const mDiasTurno = q.match(/(?:pon|ponle|cambia|cambiale|con|a)\s*(\d{1,2})\s*(?:turnos?|dias?)(?!\s*a\s*descontar)/i);
+        if (mDiasTurno) {
+          nuevosDiasTurno = parseInt(mDiasTurno[1], 10);
+          huboCambios = true;
+        }
+
+        if (huboCambios) {
+          const valorTurno = Number(p.valorTurno) || 0;
+          const valorHora = Number(p.valorHoraAdicional) || Math.round(valorTurno / 8);
+
+          const finalDiasTurno = nuevosDiasTurno !== undefined ? nuevosDiasTurno : (Number(f.diasTurno || f.turnos) || 0);
+          const finalHoras = nuevasHorasAdic !== undefined ? nuevasHorasAdic : (Number(f.horasAdicionales) || 0);
+          const finalTurnosAdic = nuevosTurnosAdic !== undefined ? nuevosTurnosAdic : (Number(f.turnosAdicionales) || 0);
+          const finalBono = nuevoBono !== undefined ? nuevoBono : (tieneBono === false ? 0 : (Number(f.bono || f.valorBono) || 0));
+          const finalPrestamo = nuevoPrestamo !== undefined ? nuevoPrestamo : (tieneDescuentoPrestamo === false ? 0 : (Number(f.valorDescuentoPrestamo) || 0));
+
+          let finalDiasARL = diasSeguridadSocial !== undefined ? diasSeguridadSocial : (Number(f.diasARL) || finalDiasTurno);
+          if (tieneDescuentoSeguridad === false) finalDiasARL = 0;
+          const finalValorARL = finalDiasARL > 0 ? calcularDescuentoARLPila(finalDiasARL) : 0;
+
+          const subtotalTurnos = finalDiasTurno * valorTurno;
+          const subtotalHoras = finalHoras * valorHora;
+          const subtotalTurnosAdic = finalTurnosAdic * valorTurno;
+          const totalDevengado = subtotalTurnos + subtotalHoras + subtotalTurnosAdic + finalBono + finalValorARL;
+          const totalDeducciones = finalValorARL + finalPrestamo;
+          const nuevoNeto = totalDevengado - totalDeducciones;
+
+          const itemsCambios: string[] = [];
+          if (nuevosDiasTurno !== undefined) itemsCambios.push(`• 📅 **Días Turno**: ${f.diasTurno || 0} → **${nuevosDiasTurno} turnos** (${fmt(subtotalTurnos)})`);
+          if (diasSeguridadSocial !== undefined) {
+            itemsCambios.push(`• 🛡️ **Seguridad Social / Razón Social**: **${diasSeguridadSocial} días a descontar** → **${fmt(finalValorARL)}**`);
+          } else if (tieneDescuentoSeguridad === false) {
+            itemsCambios.push(`• 🛡️ **Seguridad Social**: Exento / Sin descuento ($0)`);
+          }
+          if (nuevoBono !== undefined || tieneBono !== undefined) {
+            itemsCambios.push(finalBono > 0 ? `• 🎁 **Bono**: +**${fmt(finalBono)}**` : `• 🎁 **Bono**: Removido ($0)`);
+          }
+          if (nuevoPrestamo !== undefined || tieneDescuentoPrestamo !== undefined) {
+            itemsCambios.push(finalPrestamo > 0 ? `• 💳 **Préstamo/Aporte**: -**${fmt(finalPrestamo)}**` : `• 💳 **Préstamo/Aporte**: Removido ($0)`);
+          }
+          if (nuevasHorasAdic !== undefined) {
+            itemsCambios.push(finalHoras > 0 ? `• ⏱️ **Horas Extra**: ${finalHoras} hrs (${fmt(subtotalHoras)})` : `• ⏱️ **Horas Extra**: Removidas (0 hrs)`);
+          }
+
+          // Pregunta de confirmación específica
+          let preguntaConfirmacion = '';
+          if (diasSeguridadSocial !== undefined && itemsCambios.length === 1) {
+            preguntaConfirmacion = `*¿Los días a descontar de seguridad social / razón social de ${nomCorto} son ${diasSeguridadSocial} (${fmt(finalValorARL)})? Confirma para aplicar en nómina:*`;
+          } else {
+            preguntaConfirmacion = `*¿Confirmas aplicar estos cambios a la nómina de ${nomCorto}? Presiona el botón o escribe "confirmo":*`;
+          }
+
+          return {
+            text: `📋 **Ajustes preparados para ${p.nombre} en nómina:**\n\n` +
+              `• 🏢 **Parqueadero**: ${p.cargo || 'General'} | Tarifa: ${fmt(valorTurno)}\n` +
+              itemsCambios.join('\n') + `\n` +
+              `• 💵 **TOTAL NETO A PAGAR**: **${fmt(nuevoNeto)}** (Antes: ${fmt(enNomina.resultado?.neto || 0)})\n\n` +
+              preguntaConfirmacion,
+            acciones: [
+              {
+                label: `⚡ Aplicar cambios a ${nomCorto} (${fmt(nuevoNeto)})`,
+                tipo: 'MODIFICAR_TURNOS',
+                payload: {
+                  historialId: enNomina.id,
+                  nombre: p.nombre,
+                  cedula: p.cedula,
+                  nuevosDias: nuevosDiasTurno,
+                  diasSeguridadSocial,
+                  tieneDescuentoSeguridad,
+                  valorDescuentoSeguridad: finalValorARL,
+                  nuevoBono: finalBono,
+                  tieneBono: finalBono > 0,
+                  nuevoPrestamo: finalPrestamo,
+                  tieneDescuentoPrestamo: finalPrestamo > 0,
+                  nuevasHorasAdicionales: finalHoras,
+                  nuevosTurnosAdicionales: finalTurnosAdic
+                }
+              },
+              {
+                label: `📍 Ubicar a ${nomCorto} en tabla`,
+                tipo: 'DESPLAZAR_TABLA',
+                payload: { cedula: p.cedula, nombre: p.nombre }
+              }
+            ],
+            nuevoContexto: {
+              ultimoTrabajador: p,
+              ajusteNominaPendiente: undefined,
+              modificacionPendiente: {
+                tipo: 'MODIFICAR_TURNOS',
+                payload: {
+                  historialId: enNomina.id,
+                  nombre: p.nombre,
+                  cedula: p.cedula,
+                  nuevosDias: nuevosDiasTurno,
+                  diasSeguridadSocial,
+                  tieneDescuentoSeguridad,
+                  valorDescuentoSeguridad: finalValorARL,
+                  nuevoBono: finalBono,
+                  tieneBono: finalBono > 0,
+                  nuevoPrestamo: finalPrestamo,
+                  tieneDescuentoPrestamo: finalPrestamo > 0,
+                  nuevasHorasAdicionales: finalHoras,
+                  nuevosTurnosAdicionales: finalTurnosAdic
+                }
+              }
+            }
+          };
+        }
+      }
+    }
+  }
+
   // ── 0.0 LIQUIDACIÓN Y REGISTRO EN LA NÓMINA EN VIVO ─────────────────────────
   const verbosLiquidar = /\b(liquida|liquidale|ingresa|ingresale|calcula|calculale|mete|metele|agrega|agregale)\b/i;
   const esIntentoNomina =
-    !esAuditoria && (
+    !esAuditoria && !esIntentoAjusteNomina && (
       Boolean(context?.liquidandoPendiente) ||
       (verbosLiquidar.test(q) && (q.includes('nomina') || q.includes('cuadro') || q.includes('tabla') || /\b(\d+)\s*(?:dias?|turnos?)\b/.test(q) || /\bcon\s*(\d+)\s*(?:dias?|turnos?)\b/.test(q))) ||
       (q.includes('a la nomina') || q.includes('al cuadro') || q.includes('a la tabla') || q.includes('en la nomina') || q.includes('en el cuadro') || q.includes('en la tabla') || q.includes('agregar trabajador') || q.includes('agregar trabajadores') || q.includes('ingresar trabajador') || q.includes('ingresar trabajadores'))

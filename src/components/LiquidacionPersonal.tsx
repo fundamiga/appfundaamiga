@@ -5,7 +5,7 @@ import {
   CheckCircle, Calculator, X, Shield, CreditCard, TrendingUp,
   FileText, Trash2, Download, ChevronRight,
   AlertCircle, Sparkles, BarChart3, Users, Clock, Sun, Moon,
-  RefreshCw, Info, BookOpen, ListTree, ChevronDown, ChevronUp
+  RefreshCw, Info, BookOpen, ListTree, ChevronDown, ChevronUp, Save
 } from 'lucide-react';
 import jsPDF from "jspdf";
 import autoTable from "jspdf-autotable";
@@ -176,16 +176,25 @@ export const LiquidacionPersonal: React.FC = () => {
   const [personaEditable, setPersonaEditable] = useState<Persona | null>(null);
   const [diasARLCalculados, setDiasARLCalculados] = useState<number | null>(null);
   const [mesSeleccionadoARL, setMesSeleccionadoARL] = useState<number>(new Date().getMonth() + 1);
-  const [historial, setHistorial] = useState<LiquidacionCompleta[]>([]);
+  const [historial, setHistorialRaw] = useState<LiquidacionCompleta[]>([]);
   const [historialPrivado, setHistorialPrivadoRaw] = useState<LiquidacionCompleta[]>([]);
 
-  // Cargar desde localStorage solo en el cliente después del montaje
+  // Cargar desde localStorage solo en el cliente después del montaje (historial privado)
   useEffect(() => {
     try {
       const saved = localStorage.getItem('historial_privado_fundamiga');
       if (saved) setHistorialPrivadoRaw(JSON.parse(saved));
     } catch {}
   }, []);
+
+  // Wrapper para historial general: guarda automáticamente en localStorage como respaldo
+  const setHistorial = (value: LiquidacionCompleta[] | ((prev: LiquidacionCompleta[]) => LiquidacionCompleta[])) => {
+    setHistorialRaw(prev => {
+      const next = typeof value === 'function' ? value(prev) : value;
+      try { localStorage.setItem('historial_general_fundamiga', JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
 
   const setHistorialPrivado = (value: LiquidacionCompleta[] | ((prev: LiquidacionCompleta[]) => LiquidacionCompleta[])) => {
     setHistorialPrivadoRaw(prev => {
@@ -215,6 +224,8 @@ export const LiquidacionPersonal: React.FC = () => {
   const [loadingRegistro, setLoadingRegistro] = useState(false);
   const [mostrarFormulas, setMostrarFormulas] = useState(false);
   const [mostrarDesglose, setMostrarDesglose] = useState(false);
+  const [guardando, setGuardando] = useState(false);
+  const [guardadoOk, setGuardadoOk] = useState(false);
 
   // Cargar trabajadores desde Supabase
   useEffect(() => {
@@ -237,12 +248,18 @@ export const LiquidacionPersonal: React.FC = () => {
   useEffect(() => {
     setLoadingHistorial(true);
     supabase.from('historial_liquidaciones').select('*').order('creado_at').then(({ data, error }) => {
-      if (error) { setErrorMsg('Error al cargar historial: ' + error.message); }
-      else if (data && data.length > 0) {
+      if (error) {
+        setErrorMsg('Error al cargar historial: ' + error.message);
+        // Fallback: cargar desde localStorage si Supabase falla
+        try {
+          const local = localStorage.getItem('historial_general_fundamiga');
+          if (local) setHistorialRaw(JSON.parse(local));
+        } catch {}
+      } else if (data && data.length > 0) {
         // Traer trabajadores actualizados para sincronizar numeroCuenta
         supabase.from('trabajadores').select('cedula, numero_cuenta').then(({ data: trabajadores }) => {
           const cuentaMap = new Map((trabajadores || []).map((t: any) => [t.cedula, t.numero_cuenta || '']));
-          setHistorial(data.map((row: any) => ({
+          const mapped = data.map((row: any) => ({
             persona: {
               ...row.persona,
               numeroCuenta: cuentaMap.has(row.persona.cedula)
@@ -251,12 +268,22 @@ export const LiquidacionPersonal: React.FC = () => {
             },
             form: row.form, resultado: row.resultado,
             fecha: row.fecha, estado: row.estado, _id: row.id, quincena: row.quincena,
-          })));
+          }));
+          setHistorialRaw(mapped);
+          // Sincronizar localStorage con lo que vino de Supabase
+          try { localStorage.setItem('historial_general_fundamiga', JSON.stringify(mapped)); } catch {}
         });
+      } else {
+        // Supabase devuelve vacío — intentar cargar desde localStorage
+        try {
+          const local = localStorage.getItem('historial_general_fundamiga');
+          if (local) setHistorialRaw(JSON.parse(local));
+        } catch {}
       }
       setLoadingHistorial(false);
     });
   }, []);
+
 
   const filtradas = personasActivas.filter(p => p.nombre.toLowerCase().includes(busqueda.toLowerCase()) || p.cedula.includes(busqueda));
 
@@ -1123,7 +1150,7 @@ export const LiquidacionPersonal: React.FC = () => {
   };
 
   const borrarHistorial = async () => {
-    if (!confirm("¿Seguro que quieres borrar todo el informe?")) return;
+    if (!confirm("¿Seguro que quieres borrar todo el informe?\n\nEsto borrará también el respaldo local de la página.")) return;
     if (modoInforme === 'general') {
       const ids = historial.map((i: any) => i._id).filter(Boolean);
       let error: any = null;
@@ -1141,6 +1168,8 @@ export const LiquidacionPersonal: React.FC = () => {
         return;
       }
       await registrarCambio('BORRADO INFORME', 'Todos', `Se borró el informe completo con ${historialActivo.length} registros`, { total: historialActivo.length }, null);
+      // Limpiar también el respaldo local
+      try { localStorage.removeItem('historial_general_fundamiga'); } catch {}
       setHistorial([]);
     } else {
       localStorage.removeItem('historial_privado_fundamiga');
@@ -1323,6 +1352,7 @@ export const LiquidacionPersonal: React.FC = () => {
 
   const set = (field: keyof FormLiquidacion, value: any) => setForm(prev => ({ ...prev, [field]: value }));
 
+
   const handleCalcular = async () => {
     if (!personaEditable) return;
     // Pedir nombre si no está configurado
@@ -1350,6 +1380,7 @@ export const LiquidacionPersonal: React.FC = () => {
       setHistorialPrivado(prev => [...prev, { persona: personaEditable, form, resultado: r, fecha, estado: 'Pendiente' } as any]);
     }
   };
+
 
   const res = resultado;
 
@@ -1851,6 +1882,7 @@ export const LiquidacionPersonal: React.FC = () => {
                   <span>Calcular {modoInforme === 'privado' ? '(Privado 🔒)' : 'Liquidación'}</span>
                   <ChevronRight size={18} className="group-hover:translate-x-1 transition-transform" />
                 </button>
+
               </>
             )}
           </div>

@@ -2618,11 +2618,12 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
 
   // ── 0.0 LIQUIDACIÓN Y REGISTRO EN LA NÓMINA EN VIVO ─────────────────────────
   const verbosLiquidar = /\b(liquida|liquidale|ingresa|ingresale|calcula|calculale|mete|metele|agrega|agregale)\b/i;
+  const esPreguntaOBusqueda = /\b(esta|estan|busca|buscar|encuentra|quien|quienes|donde|hay|ver|consultar|consulta|mostrar|muestra)\b/i.test(q);
   const esIntentoNomina =
     !esAuditoria && !esIntentoAjusteNomina && !esCambioEstadoIndividual && (
-      Boolean(context?.liquidandoPendiente) ||
+      (!esPreguntaOBusqueda && Boolean(context?.liquidandoPendiente)) ||
       (verbosLiquidar.test(q) && (q.includes('nomina') || q.includes('cuadro') || q.includes('tabla') || /\b(\d+)\s*(?:dias?|turnos?)\b/.test(q) || /\bcon\s*(\d+)\s*(?:dias?|turnos?)\b/.test(q))) ||
-      (q.includes('a la nomina') || q.includes('al cuadro') || q.includes('a la tabla') || q.includes('en la nomina') || q.includes('en el cuadro') || q.includes('en la tabla') || q.includes('agregar trabajador') || q.includes('agregar trabajadores') || q.includes('ingresar trabajador') || q.includes('ingresar trabajadores'))
+      (q.includes('a la nomina') || q.includes('al cuadro') || q.includes('a la tabla') || (q.includes('en la nomina') && !esPreguntaOBusqueda) || (q.includes('en el cuadro') && !esPreguntaOBusqueda) || (q.includes('en la tabla') && !esPreguntaOBusqueda) || q.includes('agregar trabajador') || q.includes('agregar trabajadores') || q.includes('ingresar trabajador') || q.includes('ingresar trabajadores'))
     );
 
   if (esIntentoNomina) {
@@ -2669,43 +2670,42 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
       // 6. Identificar al trabajador
       let trabajadorEncontrado: any = null;
 
-      if (context?.liquidandoPendiente?.trabajador) {
+      const palabrasControlLiq = new Set([
+        'liquida', 'liquidale', 'ingresa', 'ingresale', 'calcula', 'calculale', 'mete', 'metele', 'agrega', 'agregale',
+        'con', 'de', 'del', 'a', 'al', 'los', 'las', 'el', 'la', 'un', 'una', 'por', 'en',
+        'turnos', 'turno', 'dias', 'dia', 'horas', 'hora', 'extra', 'extras', 'adicionales', 'adicional',
+        'bono', 'bonos', 'nomina', 'cuadro', 'tabla', 'porfa', 'favor', 'favorito', 'prestamo', 'aporte', 'aportes',
+        'descuento', 'arl', 'seguridad', 'sin', 'social'
+      ]);
+
+      const tokensNombre = q.split(/\s+/).filter(w => w.length >= 2 && !palabrasControlLiq.has(w) && !/^\d+$/.test(w));
+
+      if (tokensNombre.length > 0) {
+        const candidatos = todosTrabajadores.map(t => {
+          const tNorm = t.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+          let score = 0;
+          if (tokensNombre.every(tk => tNorm.includes(tk))) {
+            score = 100 + tokensNombre.length * 10;
+          } else {
+            const palabrasT = tNorm.split(/\s+/).filter((w: string) => w.length >= 2);
+            for (const tk of tokensNombre) {
+              if (palabrasT.includes(tk)) score += 20;
+            }
+          }
+          return { t, score };
+        }).filter(c => c.score > 0).sort((a, b) => b.score - a.score);
+
+        if (candidatos.length > 0 && candidatos[0].score >= 20) {
+          trabajadorEncontrado = candidatos[0].t;
+        }
+      }
+
+      // Si no se mencionó a un trabajador explícito en el mensaje, usar el que estaba en el flujo pendiente
+      if (!trabajadorEncontrado && context?.liquidandoPendiente?.trabajador) {
         trabajadorEncontrado = todosTrabajadores.find(t =>
           String(t.cedula).trim() === String(context.liquidandoPendiente!.trabajador.cedula).trim() ||
           t.id === context.liquidandoPendiente!.trabajador.id
         ) || context.liquidandoPendiente.trabajador;
-      }
-
-      if (!trabajadorEncontrado) {
-        const palabrasControlLiq = new Set([
-          'liquida', 'liquidale', 'ingresa', 'ingresale', 'calcula', 'calculale', 'mete', 'metele', 'agrega', 'agregale',
-          'con', 'de', 'del', 'a', 'al', 'los', 'las', 'el', 'la', 'un', 'una', 'por', 'en',
-          'turnos', 'turno', 'dias', 'dia', 'horas', 'hora', 'extra', 'extras', 'adicionales', 'adicional',
-          'bono', 'bonos', 'nomina', 'cuadro', 'tabla', 'porfa', 'favor', 'favorito', 'prestamo', 'aporte', 'aportes',
-          'descuento', 'arl', 'seguridad', 'sin', 'social'
-        ]);
-
-        const tokensNombre = q.split(/\s+/).filter(w => w.length >= 3 && !palabrasControlLiq.has(w) && !/^\d+$/.test(w));
-
-        if (tokensNombre.length > 0) {
-          const candidatos = todosTrabajadores.map(t => {
-            const tNorm = t.nombre.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
-            let score = 0;
-            if (tokensNombre.every(tk => tNorm.includes(tk))) {
-              score = 100 + tokensNombre.length * 10;
-            } else {
-              const palabrasT = tNorm.split(/\s+/).filter((w: string) => w.length >= 3);
-              for (const tk of tokensNombre) {
-                if (palabrasT.includes(tk)) score += 20;
-              }
-            }
-            return { t, score };
-          }).filter(c => c.score > 0).sort((a, b) => b.score - a.score);
-
-          if (candidatos.length > 0 && candidatos[0].score >= 20) {
-            trabajadorEncontrado = candidatos[0].t;
-          }
-        }
       }
 
       if (!trabajadorEncontrado && context?.ultimoTrabajador) {
@@ -2719,8 +2719,15 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
       // FLUJO CONVERSACIONAL GUIADO PASO POR PASO
       // =========================================================================
 
-      // Si venimos de un paso guiado previo:
-      if (context?.liquidandoPendiente && trabajadorEncontrado) {
+      // Si venimos de un paso guiado previo para ESTE mismo trabajador:
+      const esMismoTrabajadorPendiente = Boolean(
+        context?.liquidandoPendiente?.trabajador &&
+        trabajadorEncontrado &&
+        (String(trabajadorEncontrado.cedula).trim() === String(context.liquidandoPendiente.trabajador.cedula).trim() ||
+         trabajadorEncontrado.id === context.liquidandoPendiente.trabajador.id)
+      );
+
+      if (esMismoTrabajadorPendiente && context?.liquidandoPendiente && trabajadorEncontrado) {
         // PASO 3 -> RESPUESTA SOBRE DESCUENTO/PRESTAMO -> CALCULAR Y MOSTRAR CONFIRMACIÓN
         if (context.liquidandoPendiente.paso === 'DESCUENTO') {
           const diasGuardados = context.liquidandoPendiente.diasTurno || 16;
@@ -2899,7 +2906,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
               payload: `12 turnos`
             },
             {
-              label: `⚡ Registrar directa con 16 días ($${fmt(16 * valorTurno - 4000)})`,
+              label: `⚡ Registrar directa con 16 días (${fmt(16 * valorTurno - 4000)})`,
               tipo: 'LIQUIDAR_TRABAJADOR',
               payload: {
                 persona: {
@@ -4842,7 +4849,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
           accionesList.push({
             label: `⚡ Agregar a ${t.nombre.split(' ')[0]} a la nómina`,
             tipo: 'CONSULTAR_DETALLE',
-            payload: `Liquida a ${t.nombre}`
+            payload: `Liquida a ${t.nombre} con cédula ${t.cedula}`
           });
           accionesList.push({
             label: `📍 Ubicar a ${t.nombre.split(' ')[0]} en el sistema`,
@@ -4863,6 +4870,16 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
         }
       }
 
+      // Reordenar acciones para que "Agregar a la nómina" y "Ubicar" aparezcan de primero
+      accionesList.sort((a, b) => {
+        const priority = (tipo: string) => {
+          if (tipo === 'CONSULTAR_DETALLE' || tipo === 'LIQUIDAR_TRABAJADOR') return 1;
+          if (tipo === 'DESPLAZAR_TABLA' || tipo === 'EDITAR_EN_TABLA') return 2;
+          return 3;
+        };
+        return priority(a.tipo) - priority(b.tipo);
+      });
+
       if (primerNoEnNomina) {
         respuesta += `👉 **¿Deseas agregar a ${primerNoEnNomina.nombre.split(' ')[0]} a la nómina?**\n` +
           `*Escribe por ejemplo: "Liquida a ${primerNoEnNomina.nombre.split(' ')[0]} con 15 turnos" o presiona el botón abajo.*`;
@@ -4870,7 +4887,7 @@ async function processFundamigaQuery(query: string, context?: ChatContext): Prom
 
       return {
         text: respuesta.trim(),
-        acciones: accionesList.slice(0, 6),
+        acciones: accionesList.slice(0, 8),
         nuevoContexto: {
           ultimoTrabajador: resultados[0],
           campoPendiente: undefined,

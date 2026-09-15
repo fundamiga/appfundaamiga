@@ -751,14 +751,54 @@ export default function AIChatWidget() {
                           );
                         }
 
-                        if (act.tipo === 'CONSULTAR_DETALLE') {
+                        if (act.tipo === 'LIQUIDAR_TRABAJADOR' && act.payload) {
+                          const actionKey = `liq-${aIdx}-${act.payload.persona?.cedula}`;
+                          const isLiquidating = ejecutandoAccionId === actionKey;
+                          const isLiquidated = accionesEjecutadas.includes(actionKey);
+
                           return (
                             <button
                               key={aIdx}
                               onClick={() => handleExecuteAction(act, aIdx)}
-                              className="w-full py-1.5 px-3 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-xs bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200 cursor-pointer active:scale-98"
+                              disabled={isLiquidating || isLiquidated}
+                              className={`w-full py-2 px-3 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-xs ${
+                                isLiquidated
+                                  ? 'bg-emerald-600 text-white cursor-default'
+                                  : isLiquidating
+                                  ? 'bg-emerald-100 text-emerald-900 cursor-wait'
+                                  : 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white active:scale-98 shadow-sm cursor-pointer'
+                              }`}
                             >
-                              <HelpCircle size={13} /> {act.label}
+                              {isLiquidated ? (
+                                <>
+                                  <Check size={14} /> Agregado a la nómina
+                                </>
+                              ) : isLiquidating ? (
+                                <>
+                                  <RefreshCw size={14} className="animate-spin" /> Agregando a la nómina...
+                                </>
+                              ) : (
+                                <>
+                                  <Zap size={14} className="fill-white" /> {act.label}
+                                </>
+                              )}
+                            </button>
+                          );
+                        }
+
+                        if (act.tipo === 'CONSULTAR_DETALLE') {
+                          const isAgregar = act.label.includes('Agregar') || act.label.includes('Liquida');
+                          return (
+                            <button
+                              key={aIdx}
+                              onClick={() => handleExecuteAction(act, aIdx)}
+                              className={`w-full py-2 px-3 rounded-xl text-[11px] font-bold flex items-center justify-center gap-1.5 transition-all shadow-xs cursor-pointer active:scale-98 ${
+                                isAgregar
+                                  ? 'bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-700 hover:to-teal-700 text-white shadow-sm'
+                                  : 'bg-indigo-50 hover:bg-indigo-100 text-indigo-800 border border-indigo-200'
+                              }`}
+                            >
+                              {isAgregar ? <Zap size={14} className="fill-white" /> : <HelpCircle size={13} />} {act.label}
                             </button>
                           );
                         }

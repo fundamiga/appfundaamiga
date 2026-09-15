@@ -512,13 +512,7 @@ export const LiquidacionPersonal: React.FC = () => {
         item.diasTurno,                               // G - Turnos
         item.horasAdicionales,                        // H - Horas
         item.bono,                                    // I - Bono
-        // J - Bruto: fórmula (Val.Turno * Turnos) + (Horas * Val.Hora) + Bono + ARL
-        {
-          formula: item.persona.valorHoraAdicional && item.horasAdicionales > 0
-            ? `=(F${rn}*G${rn})+(H${rn}*${item.persona.valorHoraAdicional})+I${rn}+L${rn}`
-            : `=(F${rn}*G${rn})+I${rn}+L${rn}`,
-          result: item.totalBruto
-        },
+        item.totalBruto,                              // J - Bruto (valor calculado)
         item.descuentoPrestamo,                       // K - Aportes
         item.descuentoSeguridad,                      // L - ARL
         // M - Neto: fórmula Bruto - Aportes - ARL

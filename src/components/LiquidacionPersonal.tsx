@@ -648,6 +648,8 @@ export const LiquidacionPersonal: React.FC = () => {
 
 
   const seleccionar = async (p: Persona) => {
+    // Resetear inmediatamente el formulario para evitar que se muestren los días del trabajador anterior
+    setForm(formVacio());
     setPersonaSeleccionada(p); setPersonaEditable({ ...p });
     setBusqueda(p.nombre); setMostrarDropdown(false);
     setResultado(null); 
@@ -668,11 +670,12 @@ export const LiquidacionPersonal: React.FC = () => {
     
     setDiasARLCalculados(dias);
 
-    // Configurar form inicial
-    const formInicial = formVacio();
-    formInicial.valorDescuentoSeguridad = calcularDescuentoARLPila(dias);
-    formInicial.tieneDescuentoSeguridad = true; // sugerir descuento por defecto al haber integración
-    setForm(formInicial);
+    // Actualizar valor de ARL conservando el formulario limpio
+    setForm(prev => ({
+      ...prev,
+      valorDescuentoSeguridad: calcularDescuentoARLPila(dias),
+      tieneDescuentoSeguridad: true,
+    }));
   };
   const generarExcelDavivienda2 = () => {
     fetch('/plantilla.xlsx')

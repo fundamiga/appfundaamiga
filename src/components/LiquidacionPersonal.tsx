@@ -849,7 +849,11 @@ export const LiquidacionPersonal: React.FC = () => {
 
   const [filtroHistorial, setFiltroHistorial] = useState('');
   const [filtroCargo, setFiltroCargo] = useState('');
-  const [filtroQuincena, setFiltroQuincena] = useState('');
+  const [filtroQuincena, setFiltroQuincena] = useState<string>(() => {
+    const f = new Date(); const dia = f.getDate();
+    const mes = f.toLocaleString('es-CO', { month: 'long' }); const año = f.getFullYear();
+    return `${dia <= 15 ? '1ra' : '2da'} Quincena - ${mes.charAt(0).toUpperCase() + mes.slice(1)} ${año}`;
+  });
   const [filtroBanco, setFiltroBanco] = useState('');
   const [mostrarPreviewDavivienda, setMostrarPreviewDavivienda] = useState(false);
   const tablaRef = useRef<HTMLDivElement>(null);
@@ -1159,27 +1163,32 @@ export const LiquidacionPersonal: React.FC = () => {
   };
 
   const borrarHistorial = async () => {
-    if (!confirm("¿Seguro que quieres borrar todo el informe?\n\nEsto borrará también el respaldo local de la página.")) return;
+    const quincenaABorrar = filtroQuincena || obtenerPeriodo();
+    if (!confirm(`¿Seguro que quieres borrar la nómina de:\n\n"${quincenaABorrar}"?\n\nLas quincenas anteriores NO se borrarán.`)) return;
     if (modoInforme === 'general') {
-      const ids = historial.map((i: any) => i._id).filter(Boolean);
-      let error: any = null;
-      if (ids.length > 0) {
-        const res = await supabase.from('historial_liquidaciones').delete().in('id', ids);
-        error = res.error;
+      // Solo borrar los registros de la quincena actualmente seleccionada
+      const idsDeLaQuincena = historial
+        .filter((i: any) => (i.quincena || '') === quincenaABorrar)
+        .map((i: any) => i._id)
+        .filter(Boolean);
+
+      if (idsDeLaQuincena.length > 0) {
+        const { error } = await supabase.from('historial_liquidaciones').delete().in('id', idsDeLaQuincena);
+        if (error) {
+          console.error('Error borrando en Supabase:', error);
+          alert('⚠️ No se pudo borrar el informe de la base de datos: ' + error.message);
+          return;
+        }
       }
-      if (error || ids.length === 0) {
-        const res = await supabase.from('historial_liquidaciones').delete().not('id', 'is', null);
-        error = res.error;
-      }
-      if (error) {
-        console.error('Error borrando en Supabase:', error);
-        alert('⚠️ No se pudo borrar el informe de la base de datos: ' + error.message);
-        return;
-      }
-      await registrarCambio('BORRADO INFORME', 'Todos', `Se borró el informe completo con ${historialActivo.length} registros`, { total: historialActivo.length }, null);
-      // Limpiar también el respaldo local
-      try { localStorage.removeItem('historial_general_fundamiga'); } catch {}
-      setHistorial([]);
+
+      await registrarCambio('BORRADO QUINCENA', 'Todos', `Se borró la quincena "${quincenaABorrar}" con ${idsDeLaQuincena.length} registros`, { total: idsDeLaQuincena.length }, null);
+
+      // Actualizar estado local: quitar solo los de esa quincena
+      const restantes = historial.filter((i: any) => (i.quincena || '') !== quincenaABorrar);
+      setHistorial(restantes);
+
+      // Actualizar localStorage con lo que queda
+      try { localStorage.setItem('historial_general_fundamiga', JSON.stringify(restantes)); } catch {}
     } else {
       localStorage.removeItem('historial_privado_fundamiga');
       setHistorialPrivadoRaw([]);
